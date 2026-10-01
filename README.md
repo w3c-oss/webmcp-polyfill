@@ -92,7 +92,7 @@ Initial discovery waits up to 500 ms for existing frames. Requests use `MessageC
 
 ## Implementation status
 
-The polyfill targets `webmcp-types@0.1.9` and covers registration, discovery, execution, cancellation and `toolchange`, including frame exposure and origin filtering. Declarative forms and the `toolactivated`/`toolcancel` events are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
+The polyfill targets `webmcp-types@0.1.10` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
 
 Native contexts do not join the polyfill's channels. [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) lists the known differences from the draft, the test commands, and the spec and WPT revisions we test against.
 

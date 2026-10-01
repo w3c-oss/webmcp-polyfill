@@ -52,12 +52,14 @@ other non-testharness files are outside this suite.
 ## Draft alignment and limitations
 
 Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
+Lifecycle event timing follows [webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371)
+(draft `f2f2ae2`); the other draft changes since `eada13b` are not yet reviewed.
 
-- **Missing APIs:** declarative forms, CSS states, and lifecycle events
-  (`toolactivated`/`toolcancel`, their handlers, and `ToolActivatedEvent`/`ToolCancelEvent`)
-  are not implemented.
+- **Missing APIs:** declarative forms and CSS states are not implemented.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
+- **Lifecycle events:** script-dispatched events cannot be
+  [trusted](https://dom.spec.whatwg.org/#dom-event-istrusted), so `isTrusted` is false.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
   `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
   Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT

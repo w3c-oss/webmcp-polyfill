@@ -4,6 +4,7 @@
  */
 
 import type { WebMCP } from "webmcp-types";
+import { ToolActivatedEvent, ToolCancelEvent } from "./events.js";
 import {
   FrameBridge,
   activeWindow,
@@ -55,20 +56,25 @@ export function installWebMCP(): void {
 
   const documentPrototype = Document.prototype;
   const getDefaultView = Object.getOwnPropertyDescriptor(documentPrototype, "defaultView")!.get!;
-  const constructorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "ModelContext");
+  const interfaceObjects = {
+    ModelContext: modelContextConstructor,
+    ToolActivatedEvent,
+    ToolCancelEvent,
+  };
+  const canDefineInterface = (name: string): boolean => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    return descriptor ? descriptor.configurable === true : Object.isExtensible(globalThis);
+  };
   if (
     !Object.isExtensible(documentPrototype) ||
-    (constructorDescriptor && !constructorDescriptor.configurable) ||
-    (!constructorDescriptor && !Object.isExtensible(globalThis))
+    !Object.keys(interfaceObjects).every(canDefineInterface)
   ) {
     throw new TypeError("Cannot install WebMCP on this realm");
   }
 
-  Object.defineProperty(globalThis, "ModelContext", {
-    value: modelContextConstructor,
-    configurable: true,
-    writable: true,
-  });
+  for (const [name, value] of Object.entries(interfaceObjects)) {
+    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+  }
 
   // A method is non-constructible; defaultView supplies the native Document brand check.
   const { getModelContext } = {
@@ -97,14 +103,20 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
   readonly #tools = new Map<string, StoredTool>();
   // Only a document that was active when its context was created has a bridge.
   readonly #frames?: FrameBridge;
-  #toolchangeHandler: WebMCP.ModelContext["ontoolchange"] = null;
-  readonly #toolchangeListener = (event: Event): void => {
-    const handler = this.#toolchangeHandler;
+  readonly #eventHandlers: EventHandlers = {
+    ontoolchange: null,
+    ontoolactivated: null,
+    ontoolcancel: null,
+  };
+  // One listener serves every handler, so replacing a handler keeps its listener position.
+  readonly #eventHandlerListener = (event: Event): void => {
+    const name = eventHandlerName(event.type);
+    const handler: unknown = name ? this.#eventHandlers[name] : null;
     // An EventHandler keeps a non-callable object but never invokes it.
     if (typeof handler !== "function") {
       return;
     }
-    const result = Reflect.apply(handler, this, [event]);
+    const result: unknown = Reflect.apply(handler, this, [event]);
     if (result === false) {
       Event.prototype.preventDefault.call(event);
     }
@@ -128,20 +140,27 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
   }
 
   get ontoolchange(): WebMCP.ModelContext["ontoolchange"] {
-    return this.#toolchangeHandler;
+    return this.#eventHandlers.ontoolchange;
   }
 
   set ontoolchange(handler: WebMCP.ModelContext["ontoolchange"]) {
-    // [LegacyTreatNonObjectAsNull]: only a non-object becomes null.
-    const nextHandler = isObject(handler) ? handler : null;
-    // Replacing a handler preserves its listener position; clearing it removes that position.
-    if (!this.#toolchangeHandler && nextHandler) {
-      this.addEventListener("toolchange", this.#toolchangeListener);
-    }
-    if (this.#toolchangeHandler && !nextHandler) {
-      this.removeEventListener("toolchange", this.#toolchangeListener);
-    }
-    this.#toolchangeHandler = nextHandler;
+    this.#setEventHandler("ontoolchange", handler);
+  }
+
+  get ontoolactivated(): WebMCP.ModelContext["ontoolactivated"] {
+    return this.#eventHandlers.ontoolactivated;
+  }
+
+  set ontoolactivated(handler: WebMCP.ModelContext["ontoolactivated"]) {
+    this.#setEventHandler("ontoolactivated", handler);
+  }
+
+  get ontoolcancel(): WebMCP.ModelContext["ontoolcancel"] {
+    return this.#eventHandlers.ontoolcancel;
+  }
+
+  set ontoolcancel(handler: WebMCP.ModelContext["ontoolcancel"]) {
+    this.#setEventHandler("ontoolcancel", handler);
   }
 
   // Default parameters preserve Web IDL's required-argument counts in function.length.
@@ -294,22 +313,26 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     return new Promise<string>((resolve, reject) => {
       callerSignal?.throwIfAborted();
       const callbackController = new AbortController();
-      // A callback that already finished must not be aborted by a late cancellation.
-      let callbackFinished = false;
+      // The draft's local pending tool execution: it exists from invocation until the callback
+      // settles or the call is cancelled, and a late cancellation must not abort or report it.
+      let callbackPending = false;
 
       const onCallerAbort = (): void => {
         reject(callerSignal!.reason);
 
         // Reject the caller first; the running callback receives a default AbortError.
         queueTask(() => {
-          if (!callbackFinished) {
-            callbackController.abort();
+          if (!callbackPending) {
+            return;
           }
+          callbackPending = false;
+          callbackController.abort();
+          this.dispatchEvent(new ToolCancelEvent("toolcancel", { toolName: name }));
         });
       };
 
       const rejectExecution = (failure: ExecutionFailure): void => {
-        callbackFinished = true;
+        callbackPending = false;
         queueTask(() => {
           callerSignal?.removeEventListener("abort", onCallerAbort);
           reject(executionError(failure));
@@ -317,7 +340,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       };
 
       const completeExecution = (value: unknown): void => {
-        callbackFinished = true;
+        callbackPending = false;
         // A cancelled call must not run the author's toJSON during serialization.
         if (callerSignal?.aborted) {
           return;
@@ -370,6 +393,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
           return;
         }
 
+        callbackPending = true;
         // A Promise-returning callback that throws is treated as a rejection.
         try {
           // The callback runs without the registration object as its receiver.
@@ -379,6 +403,12 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         } catch {
           rejectCallback();
         }
+
+        // The draft fires toolactivated after invoking the callback, so listeners observe its
+        // synchronous effects. If the callback detached this document, DOM's inner invoke skips
+        // every listener because the context's relevant global is no longer fully active.
+        // Listener exceptions are reported, not thrown.
+        this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
       };
 
       callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
@@ -418,6 +448,29 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       });
     });
   }
+
+  #setEventHandler<Name extends EventHandlerName>(name: Name, handler: EventHandlers[Name]): void {
+    const type = name.slice("on".length);
+    const previousHandler = this.#eventHandlers[name];
+    // [LegacyTreatNonObjectAsNull]: only a non-object becomes null.
+    const nextHandler = isObject(handler) ? handler : null;
+    // Replacing a handler preserves its listener position; clearing it removes that position.
+    if (!previousHandler && nextHandler) {
+      this.addEventListener(type, this.#eventHandlerListener);
+    }
+    if (previousHandler && !nextHandler) {
+      this.removeEventListener(type, this.#eventHandlerListener);
+    }
+    this.#eventHandlers[name] = nextHandler;
+  }
+}
+
+const eventHandlerNames = ["ontoolchange", "ontoolactivated", "ontoolcancel"] as const;
+type EventHandlerName = (typeof eventHandlerNames)[number];
+type EventHandlers = Pick<WebMCP.ModelContext, EventHandlerName>;
+
+function eventHandlerName(type: string): EventHandlerName | undefined {
+  return eventHandlerNames.find((name) => name === `on${type}`);
 }
 
 function isExposedTo(tool: StoredTool, ownerOrigin: string, callerOrigin: string): boolean {
@@ -442,6 +495,8 @@ Object.defineProperties(ModelContextPolyfill.prototype, {
   getTools: { enumerable: true },
   executeTool: { enumerable: true },
   ontoolchange: { enumerable: true },
+  ontoolactivated: { enumerable: true },
+  ontoolcancel: { enumerable: true },
 });
 
 // Web IDL reads and converts dictionary members in lexicographical order.
