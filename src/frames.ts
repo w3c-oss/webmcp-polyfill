@@ -119,7 +119,8 @@ export class FrameBridge {
             toRegisteredTool(readToolMetadata(value), peer, reply.origin),
           );
         } catch (error) {
-          if (!(error instanceof NativeDOMException && error.name === "UnknownError")) {
+          // Refusals and missing peers are expected; malformed replies and other errors are not.
+          if (!isExecutionError(error)) {
             console.warn("WebMCP: could not read tools from a frame.", error);
           }
           return [];
@@ -143,7 +144,7 @@ export class FrameBridge {
       signal,
     );
     if (typeof reply.value !== "string") {
-      throw executionError();
+      throw executionError("OperationError");
     }
     return reply.value;
   }
@@ -173,8 +174,17 @@ export class FrameBridge {
   ): Promise<{ value: unknown; origin: string }> {
     return new Promise((resolve, reject) => {
       signal?.throwIfAborted();
-      if (this.#hidden || !this.#related(target)) {
-        reject(executionError());
+      if (this.#hidden) {
+        reject(new NativeDOMException("The document is not fully active", "InvalidStateError"));
+        return;
+      }
+      // executeTool() rejects a target that is already closed, so one closed since has unloaded.
+      if (target.closed) {
+        reject(executionError("AbortError"));
+        return;
+      }
+      if (!this.#related(target)) {
+        reject(executionError("InvalidStateError"));
         return;
       }
 
@@ -189,7 +199,7 @@ export class FrameBridge {
         this.#handshakes.delete(id);
         port1.close();
       };
-      const fail = (error: unknown = executionError()): void => {
+      const fail = (error: unknown): void => {
         port1.postMessage({ kind: "cancel" });
         close();
         reject(error);
@@ -199,7 +209,8 @@ export class FrameBridge {
         if (peerOrigin === undefined) {
           this.#forget(target);
         }
-        fail();
+        // A window that misses the deadline is treated as holding no polyfill, and so no tools.
+        fail(executionError("NotFoundError"));
       };
       const connected = (event: MessageEvent<unknown>): void => {
         if (event.source !== target) {
@@ -207,7 +218,7 @@ export class FrameBridge {
         }
         this.#handshakes.delete(id);
         if (origins && !origins.includes(event.origin)) {
-          fail();
+          fail(executionError("NotFoundError"));
           return;
         }
         peerOrigin = event.origin;
@@ -220,12 +231,12 @@ export class FrameBridge {
       };
 
       let timer = setTimeout(expire, deadline);
-      const stopWatching = this.#watch(target, fail);
+      const stopWatching = this.#watch(target, () => fail(executionError("AbortError")));
       port1.onmessage = (event: MessageEvent<unknown>) => {
         const reply = record(event.data);
         // A peer that gave up may say so before its ready message is handled here.
         if (reply?.kind === "error") {
-          fail();
+          fail(executionError(readExecutionFailure(reply.name)));
           return;
         }
         if (reply?.kind !== "result" || peerOrigin === undefined) {
@@ -234,7 +245,7 @@ export class FrameBridge {
         close();
         resolve({ value: reply.value, origin: peerOrigin });
       };
-      port1.onmessageerror = () => fail();
+      port1.onmessageerror = () => fail(executionError("OperationError"));
       signal?.addEventListener("abort", abort, { once: true });
       this.#handshakes.set(id, connected);
       // The peer's origin is unknown until it answers, and this message carries only the id.
@@ -242,7 +253,7 @@ export class FrameBridge {
         target.postMessage(`${protocol}:connect:${id}`, "*", [port2]);
       } catch {
         port2.close();
-        fail();
+        fail(executionError("OperationError"));
       }
     });
   }
@@ -319,15 +330,16 @@ export class FrameBridge {
       controller.abort();
       close();
     };
-    const fail = (): void => {
-      port.postMessage({ kind: "error" });
+    const fail = (name: ExecutionFailure): void => {
+      port.postMessage({ kind: "error", name });
       cancel();
     };
     // Tell a requester that was too slow to send its request; it may have no deadline left.
-    const timer = setTimeout(fail, deadline);
-    const stopWatching = this.#watch(source, fail);
+    const timer = setTimeout(() => fail("OperationError"), deadline);
+    // The target leaving the tree unloads its document; if the caller left, no one reads this.
+    const stopWatching = this.#watch(source, () => fail("AbortError"));
 
-    port.onmessageerror = fail;
+    port.onmessageerror = () => fail("OperationError");
     port.onmessage = async (event: MessageEvent<unknown>) => {
       const request = record(event.data);
       if (request?.kind === "cancel") {
@@ -343,8 +355,8 @@ export class FrameBridge {
         const value = await this.#respond(source, origin, request, controller.signal);
         port.postMessage({ kind: "result", value });
         close();
-      } catch {
-        fail();
+      } catch (error) {
+        fail(isExecutionError(error) ? error.name : "OperationError");
       }
     };
     source.postMessage(`${protocol}:ready:${id}`, origin);
@@ -356,8 +368,11 @@ export class FrameBridge {
     request: Record<string, unknown> | undefined,
     signal: AbortSignal,
   ): Promise<ReplyValue> {
-    if (!request || !this.#related(source)) {
-      throw executionError();
+    if (!request) {
+      throw executionError("OperationError");
+    }
+    if (!this.#related(source)) {
+      throw executionError("InvalidStateError");
     }
     if (request.kind === "permission") {
       const { childIndex, childOrigin } = request;
@@ -367,16 +382,20 @@ export class FrameBridge {
         childIndex < 0 ||
         typeof childOrigin !== "string"
       ) {
-        throw executionError();
+        throw executionError("OperationError");
       }
       return this.#childPermission(childIndex, childOrigin);
     }
-    if (!(await this.allowed()) || !(await this.#sourceAllowed(source, origin))) {
-      throw executionError();
+    if (!(await this.allowed())) {
+      // A document that may not use the API cannot register tools, so it has none to find.
+      throw executionError(this.#hidden ? "AbortError" : "NotFoundError");
+    }
+    if (!(await this.#sourceAllowed(source, origin))) {
+      throw executionError("NotAllowedError");
     }
     // The checks above may have waited on other frames.
     if (!this.#related(source)) {
-      throw executionError();
+      throw executionError("InvalidStateError");
     }
     signal.throwIfAborted();
     if (request.kind === "getTools") {
@@ -393,7 +412,7 @@ export class FrameBridge {
       await this.#handlers.changed();
       return undefined;
     }
-    throw executionError();
+    throw executionError("OperationError");
   }
 
   async #childPermission(childIndex: number, childOrigin: string): Promise<boolean> {
@@ -768,6 +787,35 @@ function isWindow(value: MessageEventSource): value is Window {
   }
 }
 
-export function executionError(): DOMException {
-  return new NativeDOMException("Tool execution failed", "UnknownError");
+// The first four names are the draft's tool execution errors:
+// https://webmachinelearning.github.io/webmcp/#tool-execution-error
+// InvalidStateError and NotAllowedError come from other executeTool() steps. Protocol failures
+// without a draft counterpart, such as a malformed reply, are reported as OperationError.
+const executionFailures = {
+  NotFoundError: "The tool is not registered in the target document",
+  DataError: "The tool input could not be parsed",
+  OperationError: "The tool failed or returned an unserializable result",
+  AbortError: "The target document was unloaded",
+  InvalidStateError: "The target document is detached or in another frame tree",
+  NotAllowedError: "WebMCP is disabled by Permissions Policy",
+} as const;
+
+export type ExecutionFailure = keyof typeof executionFailures;
+
+export function executionError(name: ExecutionFailure): DOMException {
+  // Each name has one fixed message, so a message reveals nothing beyond its name.
+  return new NativeDOMException(executionFailures[name], name);
+}
+
+function isExecutionError(error: unknown): error is DOMException & { name: ExecutionFailure } {
+  return error instanceof NativeDOMException && Object.hasOwn(executionFailures, error.name);
+}
+
+// Another frame's reply is untrusted input.
+function readExecutionFailure(value: unknown): ExecutionFailure {
+  if (typeof value === "string" && Object.hasOwn(executionFailures, value)) {
+    // SAFETY: the own-property check above limits the string to the table's names.
+    return value as ExecutionFailure;
+  }
+  return "OperationError";
 }

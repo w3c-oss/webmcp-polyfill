@@ -165,7 +165,7 @@ test("cross-origin discovery requires exposure and an explicit origin filter", a
     filtered: ["local", "public"],
     ownerWindow: true,
     remoteResult: '"public"',
-    rejected: ["UnknownError", "UnknownError"],
+    rejected: ["NotFoundError", "NotFoundError"],
   });
   await expect(owner.locator("body")).toHaveAttribute("data-private-executions", "0");
 });
@@ -216,7 +216,10 @@ test("raw messages cannot bypass a caller frame's tools policy", async ({ page }
 
   const replies = await denied.evaluate(sendToolRequests, { origin: localOrigin, name: "exposed" });
 
-  expect(replies).toEqual([{ kind: "error" }, { kind: "error" }]);
+  expect(replies).toEqual([
+    { kind: "error", name: "NotAllowedError" },
+    { kind: "error", name: "NotAllowedError" },
+  ]);
   await expect(page.locator("body")).toHaveAttribute("data-executions", "0");
 });
 
@@ -316,8 +319,8 @@ test("an intermediate frame cannot forge permissions denied by an ancestor", asy
   });
   expect(failures).toEqual(["NotAllowedError", "NotAllowedError"]);
   expect(await child.evaluate(sendToolRequests, { origin: localOrigin, name: "exposed" })).toEqual([
-    { kind: "error" },
-    { kind: "error" },
+    { kind: "error", name: "NotAllowedError" },
+    { kind: "error", name: "NotAllowedError" },
   ]);
   expect(
     Number(await denied.locator("body").getAttribute("data-forged-permissions")),
@@ -668,7 +671,7 @@ for (const change of ["navigate", "remove"] as const) {
       await page.locator('iframe[name="owner"]').evaluate((iframe) => iframe.remove());
     }
 
-    expect(await execution.evaluate(async ({ result }) => result)).toBe("UnknownError");
+    expect(await execution.evaluate(async ({ result }) => result)).toBe("AbortError");
     const tools = await page.evaluate(async (origin) => {
       return (await document.modelContext!.getTools({ fromOrigins: [origin] })).map(
         (tool) => tool.name,
@@ -720,6 +723,82 @@ for (const change of ["navigate", "remove"] as const) {
   });
 }
 
+test("another frame's execution failures keep their exception names", async ({ page }) => {
+  const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
+  await owner.evaluate(async (origin) => {
+    const circular = {};
+    Object.assign(circular, { self: circular });
+    await document.modelContext!.registerTool(
+      {
+        name: "failing",
+        description: "Failing",
+        execute({ value }) {
+          if (value === "throw") {
+            throw new Error("callback");
+          }
+          return circular;
+        },
+      },
+      { exposedTo: [origin] },
+    );
+  }, localOrigin);
+
+  const outcome = await page.evaluate(async (origin) => {
+    const context = document.modelContext!;
+    const tool = (await context.getTools({ fromOrigins: [origin] }))[0]!;
+    const results = [];
+    for (const input of [{ value: "throw" }, { value: "circular" }, { toJSON: () => 5 }]) {
+      results.push(
+        await context.executeTool(tool, input).then(
+          () => "resolved",
+          (error: Error) => error.name,
+        ),
+      );
+    }
+    return results;
+  }, remoteOrigin);
+
+  expect(outcome).toEqual(["OperationError", "OperationError", "DataError"]);
+});
+
+for (const [removal, expected] of [
+  ["before", "InvalidStateError"],
+  ["after", "AbortError"],
+] as const) {
+  test(`a target frame removed ${removal} the call rejects with ${expected}`, async ({ page }) => {
+    const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
+    await owner.evaluate(async (origin) => {
+      await document.modelContext!.registerTool(
+        { name: "removed", description: "Removed", execute: () => new Promise(() => {}) },
+        { exposedTo: [origin] },
+      );
+    }, localOrigin);
+
+    const outcome = await page.evaluate(
+      async (settings) => {
+        const context = document.modelContext!;
+        const tool = (await context.getTools({ fromOrigins: [settings.origin] }))[0]!;
+        const iframe = document.querySelector('iframe[name="owner"]')!;
+        if (settings.removal === "before") {
+          iframe.remove();
+        }
+        const execution = context.executeTool(tool, {});
+        if (settings.removal === "after") {
+          iframe.remove();
+        }
+        return execution.then(
+          () => "resolved",
+          (error: Error) => error.name,
+        );
+      },
+      { origin: remoteOrigin, removal },
+    );
+
+    // A detached target fails the call's own check; a later removal unloads the target document.
+    expect(outcome).toBe(expected);
+  });
+}
+
 test("excludes another frame tree even when a same-origin window supplies its descriptor", async ({
   page,
 }) => {
@@ -751,7 +830,7 @@ test("excludes another frame tree even when a same-origin window supplies its de
       ),
     };
   });
-  expect(result).toEqual({ discovered: 0, execution: "UnknownError" });
+  expect(result).toEqual({ discovered: 0, execution: "InvalidStateError" });
   await expect(popup.locator("body")).toHaveAttribute("data-executions", "0");
   await popup.close();
 });
@@ -778,6 +857,30 @@ test("frames without the polyfill delay neither registration nor discovery", asy
   expect(timings.names).toEqual(["top"]);
   expect(timings.registration).toBeLessThan(250);
   expect(timings.discovery).toBeLessThan(250);
+});
+
+test("executing in a frame without the polyfill rejects with NotFoundError", async ({ page }) => {
+  await addFrame(page.mainFrame(), "silent", { path: "/" });
+
+  const outcome = await page.evaluate(() =>
+    document
+      .modelContext!.executeTool(
+        {
+          name: "absent",
+          title: "",
+          description: "Absent",
+          origin: location.origin,
+          window: frames[0]!,
+        },
+        {},
+      )
+      .then(
+        () => "resolved",
+        (error: Error) => error.name,
+      ),
+  );
+
+  expect(outcome).toBe("NotFoundError");
 });
 
 test("a frame that registers at startup notifies and discovers its parent", async ({
@@ -1168,7 +1271,7 @@ test("a peer's malformed discovery replies are discarded and reported", async ({
 
   expect(outcome).toEqual({
     discoveries: Array.from({ length: replyCount }, () => ["top"]),
-    execution: "UnknownError",
+    execution: "OperationError",
   });
   expect(warnings).toEqual(
     Array.from({ length: replyCount }, () =>
@@ -1191,7 +1294,7 @@ test("a connection that never sends its request is answered with an error", asyn
     localOrigin,
   );
 
-  expect(reply).toEqual({ kind: "error" });
+  expect(reply).toEqual({ kind: "error", name: "OperationError" });
 });
 
 test("an error that overtakes the ready message rejects the call", async ({ page }) => {
@@ -1231,7 +1334,7 @@ test("an error that overtakes the ready message rejects the call", async ({ page
       ),
   );
 
-  expect(outcome).toBe("UnknownError");
+  expect(outcome).toBe("OperationError");
 });
 
 test("cross-origin requests cause no blocked-frame errors", async ({ page }) => {

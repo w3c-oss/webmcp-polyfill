@@ -10,6 +10,7 @@ import {
   annotationNames,
   executionError,
   readToolsPolicy,
+  type ExecutionFailure,
   type ToolMetadata,
 } from "./frames.js";
 export type { WebMCP } from "webmcp-types";
@@ -256,6 +257,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     }
 
     const serializedInput = serializeJSON(inputObject);
+    // A closed window, such as a removed frame's, has no navigable to run the tool in.
+    if (target.window.closed) {
+      throw executionError("InvalidStateError");
+    }
     callerSignal?.throwIfAborted();
     const frames = await this.#requireFrames();
     callerSignal?.throwIfAborted();
@@ -303,11 +308,11 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         });
       };
 
-      const rejectExecution = (): void => {
+      const rejectExecution = (failure: ExecutionFailure): void => {
         callbackFinished = true;
         queueTask(() => {
           callerSignal?.removeEventListener("abort", onCallerAbort);
-          reject(executionError());
+          reject(executionError(failure));
         });
       };
 
@@ -325,39 +330,54 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
             resolve(serializedResult);
           });
         } catch {
-          rejectExecution();
+          rejectExecution("OperationError");
         }
       };
+      const rejectCallback = (): void => rejectExecution("OperationError");
 
       const dispatchTool = (): void => {
         if (callerSignal?.aborted) {
           return;
         }
 
+        // executeTool() and #respond() checked Permissions Policy, which cannot change while the
+        // document lives, so only an unloaded document remains to reject here.
+        const ownerWindow = activeWindow(this.#document);
+        if (!ownerWindow) {
+          rejectExecution("AbortError");
+          return;
+        }
+        const storedTool = this.#tools.get(name);
+        // The same failure for all three keeps unexposed tools and origins from being probed.
+        if (
+          !storedTool ||
+          expectedOrigin !== ownerWindow.origin ||
+          !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)
+        ) {
+          rejectExecution("NotFoundError");
+          return;
+        }
+
+        let input: unknown;
         try {
-          const ownerWindow = requireActiveWindow(this.#document);
-          const storedTool = this.#tools.get(name);
-          if (
-            !storedTool ||
-            expectedOrigin !== ownerWindow.origin ||
-            !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)
-          ) {
-            rejectExecution();
-            return;
-          }
+          input = JSON.parse(serializedInput);
+        } catch {
+          rejectExecution("DataError");
+          return;
+        }
+        if (!isObject(input)) {
+          rejectExecution("DataError");
+          return;
+        }
 
-          const input: unknown = JSON.parse(serializedInput);
-          if (!isObject(input)) {
-            rejectExecution();
-            return;
-          }
-
+        // A Promise-returning callback that throws is treated as a rejection.
+        try {
           // The callback runs without the registration object as its receiver.
           const execute = storedTool.execute;
           const callbackResult = execute(input, { signal: callbackController.signal });
-          Promise.resolve(callbackResult).then(completeExecution, rejectExecution);
+          Promise.resolve(callbackResult).then(completeExecution, rejectCallback);
         } catch {
-          rejectExecution();
+          rejectCallback();
         }
       };
 
