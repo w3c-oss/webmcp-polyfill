@@ -175,7 +175,7 @@ export class FrameBridge {
     return new Promise((resolve, reject) => {
       signal?.throwIfAborted();
       if (this.#hidden) {
-        reject(new NativeDOMException("The document is not fully active", "InvalidStateError"));
+        reject(new NativeDOMException("The document is not active.", "InvalidStateError"));
         return;
       }
       // executeTool() rejects a target that is already closed, so one closed since has unloaded.
@@ -791,13 +791,14 @@ function isWindow(value: MessageEventSource): value is Window {
 // https://webmachinelearning.github.io/webmcp/#tool-execution-error
 // InvalidStateError and NotAllowedError come from other executeTool() steps. Protocol failures
 // without a draft counterpart, such as a malformed reply, are reported as OperationError.
+// The messages are Chromium's: https://crrev.com/c/8546218
 const executionFailures = {
-  NotFoundError: "The tool is not registered in the target document",
-  DataError: "The tool input could not be parsed",
-  OperationError: "The tool failed or returned an unserializable result",
-  AbortError: "The target document was unloaded",
-  InvalidStateError: "The target document is detached or in another frame tree",
-  NotAllowedError: "WebMCP is disabled by Permissions Policy",
+  NotFoundError: "The requested tool was not found or is not accessible.",
+  DataError: "Failed to parse tool input arguments.",
+  OperationError: "Tool execution failed.",
+  AbortError: "Tool execution aborted.",
+  InvalidStateError: "Target frame is not accessible.",
+  NotAllowedError: 'Access to the feature "tools" is disallowed by permissions policy.',
 } as const;
 
 export type ExecutionFailure = keyof typeof executionFailures;

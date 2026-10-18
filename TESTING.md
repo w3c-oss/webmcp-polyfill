@@ -59,10 +59,10 @@ Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/b
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
-  `OperationError`, `AbortError`, or `InvalidStateError`. Pinned WPT and Chromium still
-  expect `UnknownError` ([crbug.com/509555636](https://crbug.com/509555636)), so six
-  subtests are expected failures. Failures of the polyfill's own frame messages, such as a
-  malformed reply, have no draft counterpart and reject with `OperationError`.
+  `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
+  Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT
+  updated or removed them by `22b4a4d`. Failures of the polyfill's own frame messages,
+  such as a malformed reply, have no draft counterpart and reject with `OperationError`.
 - **Timing:** MessagePorts approximate native task ordering. Aborting before
   dispatch skips the callback; the draft dispatches and then aborts its signal.
   Delegated permission checks are asynchronous, so argument errors can precede

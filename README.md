@@ -98,9 +98,7 @@ Native contexts do not join the polyfill's channels. [TESTING.md](https://github
 
 `executeTool()` accepts an object and returns a JSON-serialized result. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
 
-A failed execution rejects with the draft's `DOMException` name: `NotFoundError` when the target has no such tool exposed to the caller, `DataError` when the input does not parse to an object, `OperationError` when the callback throws, rejects, or returns an unserializable result, `AbortError` when the target document unloads during the call, and `InvalidStateError` when the target frame was already removed or is in another frame tree. The callback's own error stays in its frame.
-
-Where Chromium's native WebMCP is enabled, the polyfill leaves it in place. Chromium still rejects missing tools, invalid input, callback failures, and unloaded targets with `UnknownError` ([crbug.com/509555636](https://crbug.com/509555636)), so treat any name you do not handle as a generic failure.
+A failed execution rejects with the draft's `DOMException` name, such as `NotFoundError` or `OperationError`, rather than the callback's own error.
 
 Breaking API changes ship with notes: in minor releases while the version is 0.x, in majors after 1.0.
 
