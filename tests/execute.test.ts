@@ -242,9 +242,9 @@ test("serializes results as JSON and rejects callback or serialization failures"
     "null",
     "42",
     '{"success":true}',
-    "UnknownError",
-    "UnknownError",
-    "UnknownError",
+    "OperationError",
+    "OperationError",
+    "OperationError",
   ]);
   expect(pageErrors).toEqual([]);
 });
@@ -481,7 +481,7 @@ test("execution rejects when the target frame has no tool with that name", async
     }
   });
 
-  expect(outcome).toBe("UnknownError");
+  expect(outcome).toBe("NotFoundError");
 });
 
 test("descriptor origins are parsed, and a mismatch fails like a missing tool", async ({
@@ -516,7 +516,7 @@ test("descriptor origins are parsed, and a mismatch fails like a missing tool", 
   expect(outcome).toEqual([
     ["unparseable", "NotSupportedError"],
     ["opaque", "NotSupportedError"],
-    ["another origin", "UnknownError"],
+    ["another origin", "NotFoundError"],
   ]);
 });
 
@@ -570,7 +570,7 @@ test("unregistering before dispatch rejects without running the callback", async
     return [await pending, executions];
   });
 
-  expect(outcome).toEqual(["UnknownError", 0]);
+  expect(outcome).toEqual(["NotFoundError", 0]);
 });
 
 test("input that serializes to a non-object rejects before the callback runs", async ({ page }) => {
@@ -592,7 +592,7 @@ test("input that serializes to a non-object rejects before the callback runs", a
     return [name, executions];
   });
 
-  expect(outcome).toEqual(["UnknownError", 0]);
+  expect(outcome).toEqual(["DataError", 0]);
 });
 
 test("chained calls are not slowed by nested timer clamping", async ({ page }) => {
