@@ -2,7 +2,7 @@
 
 ## Results
 
-**235 browser tests pass** across Chromium 153.0.8010.12, Firefox 155.0, and
+**223 browser tests pass** across Chromium 153.0.8010.12, Firefox 155.0, and
 Playwright WebKit 26.6. Package checks also pass: imports, types, SSR, and tarball contents.
 CI runs these checks plus WPT in Chrome, Firefox, and actual Safari. Safari runs on
 `macos-26`; Playwright WebKit is a separate build.
@@ -12,12 +12,12 @@ in Chrome and Firefox:
 
 | Subtest result | Count |
 | --- | ---: |
-| PASS | 87 |
-| Expected FAIL | 57 |
+| PASS | 92 |
+| Expected FAIL | 52 |
 | Expected TIMEOUT | 26 |
 | Expected NOTRUN | 20 |
 
-Tested with Chrome Canary 155.0.8057.0 and Firefox Nightly 160.0a1 (20261013094244).
+Tested with Chrome Canary 157.0.8080.0 and Firefox Nightly 159.0a1 (20260930214513).
 Safari has not yet run at this pin; none of the expectations are browser-specific.
 At the file level: 43 OK, 26 expected timeouts, one expected error.
 
@@ -75,10 +75,12 @@ and `webmcp-types@0.1.9`.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
-  `OperationError`, `AbortError`, or `InvalidStateError`. Pinned WPT and Chromium still
-  expect `UnknownError` ([crbug.com/509555636](https://crbug.com/509555636)), so six
-  subtests are expected failures. Failures of the polyfill's own frame messages, such as a
-  malformed reply, have no draft counterpart and reject with `OperationError`.
+  `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
+  Chromium 158.0.8109.0 and later use the same names
+  ([crbug.com/509555636](https://crbug.com/509555636)). Six pinned subtests still expect
+  `UnknownError` and are expected failures; upstream WPT updated or removed them by
+  `22b4a4d`. Failures of the polyfill's own frame messages, such as a malformed reply,
+  have no draft counterpart and reject with `OperationError`.
 - **Timing:** MessagePorts approximate native task ordering. Aborting before
   dispatch skips the callback; the draft dispatches and then aborts its signal.
   Delegated permission checks are asynchronous, so argument errors can precede

@@ -723,7 +723,9 @@ for (const change of ["navigate", "remove"] as const) {
   });
 }
 
-test("another frame's execution failures keep their exception names", async ({ page }) => {
+test("another frame's execution failures keep their names with fixed messages", async ({
+  page,
+}) => {
   const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
   await owner.evaluate(async (origin) => {
     const circular = {};
@@ -751,14 +753,19 @@ test("another frame's execution failures keep their exception names", async ({ p
       results.push(
         await context.executeTool(tool, input).then(
           () => "resolved",
-          (error: Error) => error.name,
+          (error: Error) => `${error.name}: ${error.message}`,
         ),
       );
     }
     return results;
   }, remoteOrigin);
 
-  expect(outcome).toEqual(["OperationError", "OperationError", "DataError"]);
+  // Each name has one message, so the callback's own message stays in its frame.
+  expect(outcome).toEqual([
+    "OperationError: Tool execution failed.",
+    "OperationError: Tool execution failed.",
+    "DataError: Failed to parse tool input arguments.",
+  ]);
 });
 
 for (const [removal, expected] of [

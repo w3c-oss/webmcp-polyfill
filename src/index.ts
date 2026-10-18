@@ -389,7 +389,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
   async #requireFrames(): Promise<FrameBridge> {
     const frames = this.#frames;
     if (!frames || !(await frames.allowed())) {
-      throw new NativeDOMException("WebMCP is disabled by Permissions Policy", "NotAllowedError");
+      throw new NativeDOMException(
+        'Access to the feature "tools" is disallowed by permissions policy.',
+        "NotAllowedError",
+      );
     }
     requireActiveWindow(this.#document);
     return frames;
@@ -625,12 +628,15 @@ function isPotentiallyTrustworthy({ protocol, hostname }: URL): boolean {
 function requireActiveWindow(owner: Document): Window {
   const view = activeWindow(owner);
   if (!view) {
-    throw new NativeDOMException("The document is not fully active", "InvalidStateError");
+    throw new NativeDOMException("The document is not active.", "InvalidStateError");
   }
 
   // Synchronous where the browser exposes the policy; FrameBridge.allowed() covers the rest.
   if (readToolsPolicy(owner) === false) {
-    throw new NativeDOMException("WebMCP is disabled by Permissions Policy", "NotAllowedError");
+    throw new NativeDOMException(
+      'Access to the feature "tools" is disallowed by permissions policy.',
+      "NotAllowedError",
+    );
   }
   return view;
 }
