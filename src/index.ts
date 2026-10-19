@@ -1,5 +1,5 @@
 /*!
- * Copyright (c) 2026 WebMCP polyfill contributors
+ * Copyright (c) 2026 World Wide Web Consortium
  * SPDX-License-Identifier: Apache-2.0
  */
 

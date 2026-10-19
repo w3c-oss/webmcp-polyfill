@@ -107,4 +107,4 @@ Breaking API changes ship with notes: in minor releases while the version is 0.x
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE) © 2026 [World Wide Web Consortium](https://www.w3.org/)
