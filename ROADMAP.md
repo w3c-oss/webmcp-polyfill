@@ -11,7 +11,7 @@ Developing the polyfill in other languages.
 ## Technical goals
 
 * Publish the npm package.
-* Make progress on two features: [lifecycle events](https://github.com/webmachinelearning/webmcp-polyfill/pull/7) and [declarative support](https://github.com/webmachinelearning/webmcp/blob/main/declarative-api-explainer.md%20and%20https://github.com/webmachinelearning/webmcp-polyfill/pull/9)  
+* Make progress on two features: [lifecycle events](https://github.com/webmachinelearning/webmcp-polyfill/pull/7) and declarative support ([explainer](https://github.com/webmachinelearning/webmcp/blob/main/declarative-api-explainer.md) and [declarative tools](https://github.com/webmachinelearning/webmcp-polyfill/pull/9))
 * Monitor the WebMCP specification and align code as needed.
 * Keep up with Web Platform Tests coverage.
 
