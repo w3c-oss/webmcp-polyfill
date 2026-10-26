@@ -38,11 +38,11 @@ const contexts = new WeakMap<Document, ModelContextPolyfill>();
  *
  * @throws {TypeError} If the window or Document prototype prevents installation.
  * @example
- * import { installWebMCP } from "webmcp-polyfill";
+ * import { installWebMCP } from "@w3c/webmcp-polyfill";
  * installWebMCP();
  *
  * @see https://webmachinelearning.github.io/webmcp/#document-extension
- * @see https://github.com/webmachinelearning/webmcp-polyfill/blob/main/TESTING.md
+ * @see https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md
  */
 export function installWebMCP(): void {
   if (typeof document === "undefined" || !globalThis.isSecureContext) {

@@ -26,7 +26,7 @@ try {
     join(consumerDirectory, archive),
   ]);
 
-  const installedPackage = join(consumerDirectory, "node_modules/webmcp-polyfill");
+  const installedPackage = join(consumerDirectory, "node_modules/@w3c/webmcp-polyfill");
   const files = readdirSync(installedPackage, {
     recursive: true,
     withFileTypes: true,
@@ -59,7 +59,7 @@ try {
   writeFileSync(
     join(consumerDirectory, "consumer.ts"),
     `
-    import 'webmcp-polyfill/auto';
+    import '@w3c/webmcp-polyfill/auto';
 
     const context: WebMCP.ModelContext | undefined = document.modelContext;
     void context?.registerTool({
@@ -127,8 +127,8 @@ try {
     "--input-type=module",
     "-e",
     `
-      import { installWebMCP } from 'webmcp-polyfill';
-      import 'webmcp-polyfill/auto';
+      import { installWebMCP } from '@w3c/webmcp-polyfill';
+      import '@w3c/webmcp-polyfill/auto';
       installWebMCP();
     `,
   ]);

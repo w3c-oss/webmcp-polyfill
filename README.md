@@ -20,7 +20,7 @@ Use HTTPS or localhost.
 Load the polyfill before registering tools:
 
 ```ts
-import "webmcp-polyfill/auto";
+import "@w3c/webmcp-polyfill/auto";
 
 const context = document.modelContext;
 if (!context) {
@@ -52,7 +52,7 @@ console.log(result);
 registration.abort();
 ```
 
-For explicit installation, call `installWebMCP()` from `webmcp-polyfill`. Repeated calls are safe. Both entry points preserve existing native contexts, including partial implementations.
+For explicit installation, call `installWebMCP()` from `@w3c/webmcp-polyfill`. Repeated calls are safe. Both entry points preserve existing native contexts, including partial implementations.
 
 ### Script tag
 
@@ -70,7 +70,7 @@ This standalone IIFE installs `document.modelContext` automatically.
 In Next.js 15.3+, add this to `instrumentation-client.ts` beside `app` (or `src/instrumentation-client.ts` beside `src/app`):
 
 ```ts
-import "webmcp-polyfill/auto";
+import "@w3c/webmcp-polyfill/auto";
 ```
 
 Next.js runs [client instrumentation](https://nextjs.org/docs/app/api-reference/file-conventions/instrumentation-client) before hydration. A Server Component import alone won't install the polyfill in the browser.
@@ -95,7 +95,7 @@ Initial discovery waits up to 500 ms for existing frames. Requests use `MessageC
 
 The target is `webmcp-types@0.1.9`: registration, discovery, execution, cancellation, and `toolchange`, including frame exposure and origin filtering. Declarative forms and `toolactivated`/`toolcancel` are not implemented. Browser agent integration requires browser support.
 
-Native contexts do not join the polyfill's channels. See [TESTING.md](https://github.com/webmachinelearning/webmcp-polyfill/blob/main/TESTING.md) for policy and frame limitations, commands, and tracked revisions.
+Native contexts do not join the polyfill's channels. See [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) for policy and frame limitations, commands, and tracked revisions.
 
 `executeTool()` accepts an object and returns a JSON-serialized result. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
 

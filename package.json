@@ -1,11 +1,14 @@
 {
-  "name": "webmcp-polyfill",
+  "name": "@w3c/webmcp-polyfill",
   "version": "0.1.0",
   "description": "A polyfill for WebMCP",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/webmachinelearning/webmcp-polyfill.git"
+    "url": "git+https://github.com/w3c-oss/webmcp-polyfill.git"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist"
