@@ -7,9 +7,6 @@
     "type": "git",
     "url": "git+https://github.com/w3c-oss/webmcp-polyfill.git"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "files": [
     "dist"
   ],

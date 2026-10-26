@@ -12,7 +12,7 @@ The primary responsibilities of the Owners to this Project are to manage the Pro
 
 All Core Committers are Owners. An Owner does not have to be a Core Committer. The collective Owners determine whether an Owner is also a Core Committer.
 
-The list of current Owners are listed in the Program requirements on Project (TODO: link).
+The list of current Owners are listed in the [Program requirements on Project](https://github.com/w3c-oss/open-source-program/blob/main/projects/webmcp-polyfill/project-reqs.md#owners-and-their-responsibilities).
 
 ## Supporters
 

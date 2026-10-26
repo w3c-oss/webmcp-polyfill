@@ -1,23 +1,22 @@
 # WebMCP polyfill
 
-A polyfill for [WebMCP](https://webmachinelearning.github.io/webmcp/), with types from [webmcp-types](https://github.com/webmachinelearning/webmcp-types) and no runtime JavaScript dependencies.
+A polyfill for [WebMCP](https://webmachinelearning.github.io/webmcp/), the API that lets web pages expose tools to browser agents through `document.modelContext`. It follows the [WebMCP draft](https://webmachinelearning.github.io/webmcp/) from the [Web Machine Learning Community Group](https://www.w3.org/groups/cg/webmachinelearning/), uses types from [webmcp-types](https://github.com/webmachinelearning/webmcp-types), and has no runtime JavaScript dependencies.
 
-## Build
+WebMCP is a Community Group draft, not a W3C Standard, and it is still changing. Expect this package to change with it.
 
-This package is in development. Build this checkout with Node.js 24 and pnpm:
+This project is part of the [W3C Open Source Program](https://github.com/w3c-oss/open-source-program) pilot. See its [project page](https://github.com/w3c-oss/open-source-program/blob/main/projects/webmcp-polyfill/README.md) for what that means.
+
+## Install
 
 ```sh
-pnpm install
-pnpm build
+npm install @w3c/webmcp-polyfill
 ```
-
-Then install the checkout in your app with `pnpm add /path/to/webmcp-polyfill`.
 
 ## Usage
 
-Use HTTPS or localhost.
+The API only exists in secure contexts, so serve your page over HTTPS or from localhost.
 
-Load the polyfill before registering tools:
+Load the polyfill before you register tools:
 
 ```ts
 import "@w3c/webmcp-polyfill/auto";
@@ -52,18 +51,18 @@ console.log(result);
 registration.abort();
 ```
 
-For explicit installation, call `installWebMCP()` from `@w3c/webmcp-polyfill`. Repeated calls are safe. Both entry points preserve existing native contexts, including partial implementations.
+If you'd rather install it yourself, call `installWebMCP()` from `@w3c/webmcp-polyfill`. Calling it more than once is fine. Neither entry point replaces a native `document.modelContext`, even a partial one.
 
 ### Script tag
 
-Serve the built `dist/polyfill.js` before your app:
+The package also ships a standalone build at `dist/polyfill.js`. Load it before your app:
 
 ```html
 <script src="/assets/polyfill.js"></script>
 <script src="/assets/app.js"></script>
 ```
 
-This standalone IIFE installs `document.modelContext` automatically.
+It installs `document.modelContext` as soon as it runs.
 
 ### Next.js
 
@@ -93,17 +92,24 @@ Initial discovery waits up to 500 ms for existing frames. Requests use `MessageC
 
 ## Implementation status
 
-The target is `webmcp-types@0.1.9`: registration, discovery, execution, cancellation, and `toolchange`, including frame exposure and origin filtering. Declarative forms and `toolactivated`/`toolcancel` are not implemented. Browser agent integration requires browser support.
+The polyfill targets `webmcp-types@0.1.9` and covers registration, discovery, execution, cancellation and `toolchange`, including frame exposure and origin filtering. Declarative forms and the `toolactivated`/`toolcancel` events are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
 
-Native contexts do not join the polyfill's channels. See [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) for policy and frame limitations, commands, and tracked revisions.
+Native contexts do not join the polyfill's channels. [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) lists the known differences from the draft, the test commands, and the spec and WPT revisions we test against.
 
 `executeTool()` accepts an object and returns a JSON-serialized result. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
 
 Breaking API changes ship with notes: in minor releases while the version is 0.x, in majors after 1.0.
 
-## Development
+## Contributing
 
-`src/` holds the polyfill, `tests/` the browser and package checks, and `wpt/` the upstream runner, pin, and expectations.
+`src/` holds the polyfill, `tests/` the browser and package checks, and `wpt/` the [web-platform-tests](https://github.com/web-platform-tests/wpt/tree/master/webmcp) runner, pin, and expectations. To work on it, use Node.js 24 and pnpm:
+
+```sh
+pnpm install
+pnpm test
+```
+
+Spec questions belong in the [WebMCP repository](https://github.com/webmachinelearning/webmcp/issues). See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor agreement and [GOVERNANCE.md](GOVERNANCE.md) for how the project is run.
 
 ## License
 
