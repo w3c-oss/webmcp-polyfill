@@ -98,6 +98,8 @@ Native contexts do not join the polyfill's channels. [TESTING.md](https://github
 
 `executeTool()` accepts an object and returns a JSON-serialized result. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
 
+A failed execution rejects with the draft's `DOMException` name, such as `NotFoundError` or `OperationError`, rather than the callback's own error.
+
 Breaking API changes ship with notes: in minor releases while the version is 0.x, in majors after 1.0.
 
 ## Contributing

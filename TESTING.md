@@ -51,13 +51,18 @@ other non-testharness files are outside this suite.
 
 ## Draft alignment and limitations
 
-Checked against [draft `d61d0e6`](https://github.com/webmachinelearning/webmcp/blob/d61d0e6d297ddb6bff3510b1330dbb215c6ef43c/index.bs).
+Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
 
 - **Missing APIs:** declarative forms, CSS states, and lifecycle events
   (`toolactivated`/`toolcancel`, their handlers, and `ToolActivatedEvent`/`ToolCancelEvent`)
   are not implemented.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
+- **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
+  `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
+  Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT
+  updated or removed them by `22b4a4d`. Failures of the polyfill's own frame messages,
+  such as a malformed reply, have no draft counterpart and reject with `OperationError`.
 - **Timing:** MessagePorts approximate native task ordering. Aborting before
   dispatch skips the callback; the draft dispatches and then aborts its signal.
   Delegated permission checks are asynchronous, so argument errors can precede
@@ -67,7 +72,8 @@ Checked against [draft `d61d0e6`](https://github.com/webmachinelearning/webmcp/b
   Opaque-origin handshakes and inaccessible cross-origin shadow frames are
   unsupported; closed shadow trees limit discovery and ordering.
 - **Deadlines:** initial discovery, handshakes, and discovery or permission replies
-  wait up to 500 ms. Late peers can be absent from results. Callbacks and
+  wait up to 500 ms. Late peers can be absent from results, and executing a tool in a
+  frame that misses the handshake deadline rejects with `NotFoundError`. Callbacks and
   `toolchange` listeners have no deadline, so an unresponsive peer can leave a call
   pending. Navigation cleanup depends on `pagehide`; removed frames are polled
   every 100 ms. Background suspension affects timing.
