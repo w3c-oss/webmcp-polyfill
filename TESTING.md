@@ -53,9 +53,9 @@ other non-testharness files are outside this suite.
 
 Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
 
-- **Missing APIs:** lifecycle events (`toolactivated`, `toolcancel`),
-  declarative `<form toolname>` registration, `SubmitEvent.agentInvoked`,
-  `SubmitEvent.respondWith()`, and `:tool-form-active` / `:tool-submit-active`.
+- **Missing APIs:** declarative forms, CSS states, and lifecycle events
+  (`toolactivated`/`toolcancel`, their handlers, and `ToolActivatedEvent`/`ToolCancelEvent`)
+  are not implemented.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
