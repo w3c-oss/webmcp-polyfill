@@ -60,6 +60,14 @@ Lifecycle event timing follows [webmcp#371](https://github.com/webmachinelearnin
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Lifecycle events:** script-dispatched events cannot be
   [trusted](https://dom.spec.whatwg.org/#dom-event-istrusted), so `isTrusted` is false.
+- **outputSchema:** `registerTool()` accepts an optional `outputSchema`, and `getTools()`
+  returns a deep copy on `RegisteredTool`, converted and snapshotted like `inputSchema`.
+  This follows the live draft after
+  [webmachinelearning/webmcp#254](https://github.com/webmachinelearning/webmcp/pull/254).
+  An omitted schema is absent (`undefined`). WPT
+  [`9bde5b3`](https://github.com/web-platform-tests/wpt/commit/9bde5b3372c351a82884e2cc06b1a9e7e3c26185)
+  expects `null`, which matches Chromium's nullable `Tool.outputSchema` attribute, not the
+  draft dictionary.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
   `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
   Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT

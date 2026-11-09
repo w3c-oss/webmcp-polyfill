@@ -52,4 +52,13 @@ if (document.modelContext) {
 
   // @ts-expect-error The current draft accepts objects, not serialized JSON.
   context.executeTool(tool, "{}");
+
+  // outputSchema is in the draft, but webmcp-types does not declare it yet.
+  context.registerTool({
+    name: "typed-output",
+    description: "Typed output",
+    // @ts-expect-error outputSchema is not declared on ModelContextTool yet.
+    outputSchema: { type: "object", properties: { ok: { type: "boolean" } } },
+    execute: () => ({ ok: true }),
+  });
 }
