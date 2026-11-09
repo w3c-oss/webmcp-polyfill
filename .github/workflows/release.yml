@@ -1,4 +1,4 @@
-name: Test
+name: CI and release
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -116,3 +116,39 @@ jobs:
           name: wpt-results-${{ matrix.browser }}
           path: wpt-results/
           retention-days: 7
+
+  release:
+    name: Create release
+    if: github.event_name == 'push'
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+    steps:
+      - id: release
+        uses: googleapis/release-please-action@v5
+
+  publish:
+    name: Publish to npm
+    if: needs.release.outputs.release_created == 'true'
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      # prepack builds dist/, which needs the dev dependencies.
+      - run: npm install --global pnpm@10.14.0
+      - run: pnpm install --frozen-lockfile
+      - run: npm publish
