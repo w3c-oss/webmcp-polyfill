@@ -708,9 +708,8 @@ function toRegisteredTool(
   const inputSchema = parseStoredSchema(metadata.serializedSchema);
   const outputSchema = parseStoredSchema(metadata.serializedOutputSchema);
 
-  // Insert present members in Web IDL order. outputSchema is on the draft's
-  // RegisteredTool; webmcp-types does not declare it yet.
-  const registered = {
+  // Insert present members in Web IDL order.
+  return {
     ...(metadata.annotations !== undefined && { annotations: { ...metadata.annotations } }),
     description: metadata.description,
     ...(inputSchema !== undefined && { inputSchema }),
@@ -720,9 +719,6 @@ function toRegisteredTool(
     title: metadata.title,
     window: owner,
   };
-  // SAFETY: every member RegisteredTool requires is set above. outputSchema is the draft member
-  // missing from webmcp-types, present only when registration stored a schema.
-  return registered as WebMCP.RegisteredTool;
 }
 
 function parseStoredSchema(serialized: string | undefined): object | undefined {
