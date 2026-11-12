@@ -4,8 +4,9 @@ import type { WebMCP } from "webmcp-types";
 export interface ToolMetadata
   extends Pick<WebMCP.RegisteredTool, "name" | "title" | "description"> {
   annotations: WebMCP.ToolAnnotations | undefined;
-  // Snapshot at registration; each discovery result parses a fresh copy.
+  // Snapshots at registration; each discovery result parses a fresh copy.
   serializedSchema: string | undefined;
+  serializedOutputSchema: string | undefined;
 }
 
 // Lexicographical, the order in which Web IDL reads dictionary members.
@@ -704,11 +705,8 @@ function toRegisteredTool(
   owner: Window,
   origin: string,
 ): WebMCP.RegisteredTool {
-  // SAFETY: the draft keeps whatever JSON toJSON produced; the cast matches RegisteredTool's type.
-  const inputSchema =
-    metadata.serializedSchema === undefined
-      ? undefined
-      : (JSON.parse(metadata.serializedSchema) as object);
+  const inputSchema = parseStoredSchema(metadata.serializedSchema);
+  const outputSchema = parseStoredSchema(metadata.serializedOutputSchema);
 
   // Insert present members in Web IDL order.
   return {
@@ -717,9 +715,18 @@ function toRegisteredTool(
     ...(inputSchema !== undefined && { inputSchema }),
     name: metadata.name,
     origin,
+    ...(outputSchema !== undefined && { outputSchema }),
     title: metadata.title,
     window: owner,
   };
+}
+
+function parseStoredSchema(serialized: string | undefined): object | undefined {
+  if (serialized === undefined) {
+    return undefined;
+  }
+  // SAFETY: the draft keeps whatever JSON toJSON produced; the cast matches the schema's object type.
+  return JSON.parse(serialized) as object;
 }
 
 // Another frame's reply is untrusted input.
@@ -729,8 +736,7 @@ function readToolMetadata(value: unknown): ToolMetadata {
     !tool ||
     typeof tool.name !== "string" ||
     typeof tool.title !== "string" ||
-    typeof tool.description !== "string" ||
-    (tool.serializedSchema !== undefined && typeof tool.serializedSchema !== "string")
+    typeof tool.description !== "string"
   ) {
     throw new TypeError("Invalid tool metadata from the frame");
   }
@@ -739,7 +745,8 @@ function readToolMetadata(value: unknown): ToolMetadata {
     title: tool.title,
     description: tool.description,
     annotations: undefined,
-    serializedSchema: tool.serializedSchema,
+    serializedSchema: readOptionalString(tool.serializedSchema),
+    serializedOutputSchema: readOptionalString(tool.serializedOutputSchema),
   };
   if (tool.annotations === undefined) {
     return metadata;
@@ -769,6 +776,16 @@ function readWindowMessage(value: unknown): { kind: string; id: string } | undef
   }
   const [namespace, kind = "", id = "", extra] = value.split(":");
   return namespace === protocol && extra === undefined ? { kind, id } : undefined;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError("Invalid tool metadata from the frame");
+  }
+  return value;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

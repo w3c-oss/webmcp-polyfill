@@ -170,7 +170,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     options: WebMCP.ModelContextRegisterToolOptions = {},
   ): Promise<void> {
     const ownerDocument = this.#document;
-    const { name, title, description, annotations, inputSchema, execute } =
+    const { name, title, description, annotations, inputSchema, outputSchema, execute } =
       readToolDefinition(tool);
     const settings = readDictionary(options);
     const exposedTo = readOriginSequence(settings.exposedTo);
@@ -186,7 +186,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       }
     };
 
-    // Duplicate, then name, then description: the draft's order.
+    // Duplicate, then name, then description, then the schemas: the draft's order.
     requireUnusedName();
     if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(name)) {
       throw new NativeDOMException(
@@ -197,12 +197,22 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     if (!description) {
       throw new NativeDOMException("A tool description cannot be empty", "InvalidStateError");
     }
+    // inputSchema is serialized before outputSchema. Either failure rejects before the signal.
     const serializedSchema = inputSchema === undefined ? undefined : serializeJSON(inputSchema);
+    const serializedOutputSchema =
+      outputSchema === undefined ? undefined : serializeJSON(outputSchema);
     registrationSignal?.throwIfAborted();
     const exposedOrigins = parseOrigins(exposedTo);
 
     const storedTool: StoredTool = {
-      metadata: { name, title, description, annotations, serializedSchema },
+      metadata: {
+        name,
+        title,
+        description,
+        annotations,
+        serializedSchema,
+        serializedOutputSchema,
+      },
       execute,
       exposedTo: exposedOrigins,
     };
@@ -510,12 +520,13 @@ function readToolDefinition(value: unknown) {
   }
   // SAFETY: callability is checked above; inputs and results are converted at invocation.
   const execute = callback as WebMCP.ToolExecuteCallback<object>;
-  const inputSchema = readInputSchema(descriptor.inputSchema);
+  const inputSchema = readSchema(descriptor.inputSchema, "inputSchema");
   const name = toDOMString(requireMember(descriptor.name, "name"));
+  const outputSchema = readSchema(descriptor.outputSchema, "outputSchema");
   const rawTitle = descriptor.title;
   const title = rawTitle === undefined ? "" : toUSVString(rawTitle);
 
-  return { name, title, description, annotations, inputSchema, execute };
+  return { name, title, description, annotations, inputSchema, outputSchema, execute };
 }
 
 // Convert the whole RegisteredTool dictionary, even members not used for dispatch.
@@ -523,9 +534,10 @@ function readExecutionTarget(value: unknown) {
   const descriptor = readDictionary(value);
   readAnnotations(descriptor.annotations);
   toDOMString(requireMember(descriptor.description, "description"));
-  readInputSchema(descriptor.inputSchema);
+  readSchema(descriptor.inputSchema, "inputSchema");
   const name = toDOMString(requireMember(descriptor.name, "name"));
   const origin = toUSVString(requireMember(descriptor.origin, "origin"));
+  readSchema(descriptor.outputSchema, "outputSchema");
   const title = descriptor.title;
   if (title !== undefined) {
     toDOMString(title);
@@ -540,9 +552,9 @@ function readExecutionTarget(value: unknown) {
   return { name, origin, window: targetWindow as Window };
 }
 
-function readInputSchema(value: unknown): object | undefined {
+function readSchema(value: unknown, member: "inputSchema" | "outputSchema"): object | undefined {
   if (value !== undefined && !isObject(value)) {
-    throw new TypeError("inputSchema must be an object");
+    throw new TypeError(`${member} must be an object`);
   }
   return value;
 }

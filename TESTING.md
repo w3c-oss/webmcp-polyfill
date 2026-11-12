@@ -52,14 +52,24 @@ other non-testharness files are outside this suite.
 ## Draft alignment and limitations
 
 Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
-Lifecycle event timing follows [webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371)
-(draft `f2f2ae2`); the other draft changes since `eada13b` are not yet reviewed.
+`outputSchema` follows [webmcp#254](https://github.com/webmachinelearning/webmcp/pull/254)
+(draft `6cd745a`) and lifecycle event timing follows
+[webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371) (draft `f2f2ae2`);
+the other draft changes since `eada13b` are not yet reviewed.
 
 - **Missing APIs:** declarative forms and CSS states are not implemented.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Lifecycle events:** script-dispatched events cannot be
   [trusted](https://dom.spec.whatwg.org/#dom-event-istrusted), so `isTrusted` is false.
+- **outputSchema:** `registerTool()` accepts an optional `outputSchema`, and `getTools()`
+  returns a deep copy on `RegisteredTool`, converted and snapshotted like `inputSchema`.
+  This follows
+  [draft `6cd745a`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs).
+  An omitted schema is absent (`undefined`). WPT
+  [`9bde5b3`](https://github.com/web-platform-tests/wpt/commit/9bde5b3372c351a82884e2cc06b1a9e7e3c26185)
+  expects `null`, which matches Chromium's nullable `Tool.outputSchema` attribute, not the
+  draft dictionary.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
   `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
   Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT
