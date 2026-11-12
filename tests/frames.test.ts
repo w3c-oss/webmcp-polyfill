@@ -1106,7 +1106,7 @@ test("a same-origin frame in a closed shadow root registers and meets a later si
 test("cross-origin discovery preserves tool metadata and its owner window", async ({ page }) => {
   const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
   await owner.evaluate(async (origin) => {
-    const descriptor = {
+    const descriptor: WebMCP.ModelContextTool = {
       name: "described",
       title: "Described",
       description: "Described tool",

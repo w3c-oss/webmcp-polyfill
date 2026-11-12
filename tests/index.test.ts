@@ -286,9 +286,9 @@ test("origin conversion gets an iterator only once and preserves its receiver", 
         },
       };
       if (operation === "registration") {
-        // @ts-expect-error Web IDL accepts iterables; the published types use arrays.
         await context.registerTool(
           { name: "iterable", description: "Iterable origins", execute: () => null },
+          // @ts-expect-error Web IDL accepts iterables; the published types use arrays.
           { exposedTo: origins },
         );
       } else {
@@ -325,9 +325,9 @@ test("failed origin conversion leaves the author's iterator open", async ({ page
       let errorName = "";
       try {
         if (operation === "registration") {
-          // @ts-expect-error Exercise an iterable with an invalid USVString item.
           await context.registerTool(
             { name: "iterable", description: "Iterable origins", execute: () => null },
+            // @ts-expect-error Exercise an iterable with an invalid USVString item.
             { exposedTo: iterator },
           );
         } else {
@@ -619,7 +619,8 @@ test("snapshots outputSchema, omits it when absent, and does not validate result
       properties: { result: { type: "string", description: "The result string" } },
       required: ["result"],
     };
-    const shaped = {
+    // Declared as ModelContextTool: the result deliberately does not match outputSchema.
+    const shaped: WebMCP.ModelContextTool = {
       name: "shaped",
       description: "Shaped",
       inputSchema,
@@ -724,7 +725,7 @@ test("rejects an unserializable outputSchema before an aborted signal", async ({
     const context = document.modelContext!;
     const circular: Record<string, unknown> = {};
     circular.self = circular;
-    const invalid = {
+    const invalid: WebMCP.ModelContextTool = {
       name: "aborted-output",
       description: "Aborted output",
       outputSchema: { type: "object", properties: { prop: circular } },
