@@ -1125,7 +1125,7 @@ test("cross-origin discovery preserves tool metadata and its owner window", asyn
       title: tool.title,
       description: tool.description,
       inputSchema: tool.inputSchema,
-      outputSchema: Reflect.get(tool, "outputSchema"),
+      outputSchema: tool.outputSchema,
       annotations: tool.annotations,
       origin: tool.origin,
       ownerWindow: tool.window === frames[0],

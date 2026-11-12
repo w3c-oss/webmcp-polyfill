@@ -648,7 +648,7 @@ test("snapshots outputSchema, omits it when absent, and does not validate result
     const outputTool = tools[0]!;
     const plain = tools[1]!;
     const shapedTool = tools[2]!;
-    const returnedOutput = Reflect.get(shapedTool, "outputSchema");
+    const returnedOutput = shapedTool.outputSchema;
     if (
       typeof returnedOutput !== "object" ||
       returnedOutput === null ||
@@ -674,9 +674,9 @@ test("snapshots outputSchema, omits it when absent, and does not validate result
       shapedKeys: Object.keys(shapedTool),
       hasPlainOutput: Object.hasOwn(plain, "outputSchema"),
       hasOutputOnlyInput: Object.hasOwn(outputTool, "inputSchema"),
-      outputOnly: Reflect.get(outputTool, "outputSchema"),
-      shapedInput: Reflect.get(copied, "inputSchema"),
-      shapedOutput: Reflect.get(copied, "outputSchema"),
+      outputOnly: outputTool.outputSchema,
+      shapedInput: copied.inputSchema,
+      shapedOutput: copied.outputSchema,
       execution: await context.executeTool(shapedTool, {}),
     };
   });
@@ -777,7 +777,7 @@ test("rejects an unserializable outputSchema before an aborted signal", async ({
       orderingError,
       outputSerialized,
       names: tools.map((tool) => tool.name),
-      stringSchema: registered ? Reflect.get(registered, "outputSchema") : "missing",
+      stringSchema: registered ? registered.outputSchema : "missing",
     };
   });
 
