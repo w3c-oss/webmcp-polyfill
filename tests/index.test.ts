@@ -221,6 +221,9 @@ test("registration converts every dictionary member in Web IDL order", async ({ 
         get name() {
           return record("name", "ordered");
         },
+        get outputSchema() {
+          return record("outputSchema", undefined);
+        },
         get title() {
           return record("title", "Ordered");
         },
@@ -247,6 +250,7 @@ test("registration converts every dictionary member in Web IDL order", async ({ 
     "execute",
     "inputSchema",
     "name",
+    "outputSchema",
     "title",
     "exposedTo",
     "signal",
@@ -282,9 +286,9 @@ test("origin conversion gets an iterator only once and preserves its receiver", 
         },
       };
       if (operation === "registration") {
-        // @ts-expect-error Web IDL accepts iterables; the published types use arrays.
         await context.registerTool(
           { name: "iterable", description: "Iterable origins", execute: () => null },
+          // @ts-expect-error Web IDL accepts iterables; the published types use arrays.
           { exposedTo: origins },
         );
       } else {
@@ -321,9 +325,9 @@ test("failed origin conversion leaves the author's iterator open", async ({ page
       let errorName = "";
       try {
         if (operation === "registration") {
-          // @ts-expect-error Exercise an iterable with an invalid USVString item.
           await context.registerTool(
             { name: "iterable", description: "Iterable origins", execute: () => null },
+            // @ts-expect-error Exercise an iterable with an invalid USVString item.
             { exposedTo: iterator },
           );
         } else {
@@ -505,6 +509,7 @@ test("snapshots registration metadata and returns sorted, independent copies", a
       nextSchema: JSON.stringify(copied.inputSchema),
       annotations: copied.annotations,
       hasSchema: Object.hasOwn(empty, "inputSchema"),
+      hasOutputSchema: Object.hasOwn(empty, "outputSchema"),
       hasAnnotations: Object.hasOwn(empty, "annotations"),
       origin: empty.origin,
       window: empty.window === window,
@@ -528,6 +533,7 @@ test("snapshots registration metadata and returns sorted, independent copies", a
   });
   expect(result).toMatchObject({
     hasSchema: false,
+    hasOutputSchema: false,
     hasAnnotations: false,
     origin: "http://localhost:8793",
     window: true,
@@ -557,6 +563,13 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
         "inputSchema serializes to undefined",
         { ...good, name: "undefined", inputSchema: { toJSON: () => undefined } },
       ],
+      ["outputSchema is not an object", { ...good, name: "bad-output", outputSchema: null }],
+      ["outputSchema is circular", { ...good, name: "circular-output", outputSchema: circular }],
+      [
+        "outputSchema serializes to undefined",
+        { ...good, name: "undefined-output", outputSchema: { toJSON: () => undefined } },
+      ],
+      ["outputSchema is a BigInt", { ...good, name: "bigint-output", outputSchema: BigInt(42) }],
     ] as const;
     const results: [string, string][] = [];
     for (const [label, descriptor] of cases) {
@@ -586,8 +599,195 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
     ["inputSchema is not an object", "TypeError"],
     ["inputSchema is circular", "TypeError"],
     ["inputSchema serializes to undefined", "TypeError"],
+    ["outputSchema is not an object", "TypeError"],
+    ["outputSchema is circular", "TypeError"],
+    ["outputSchema serializes to undefined", "TypeError"],
+    ["outputSchema is a BigInt", "TypeError"],
   ]);
   expect(registered).toEqual(["valid"]);
+});
+
+test("snapshots outputSchema, omits it when absent, and does not validate results", async ({
+  page,
+}) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const result = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    const inputSchema = { type: "object", properties: { query: { type: "string" } } };
+    const outputSchema = {
+      type: "object",
+      properties: { result: { type: "string", description: "The result string" } },
+      required: ["result"],
+    };
+    // Declared as ModelContextTool: the result deliberately does not match outputSchema.
+    const shaped: WebMCP.ModelContextTool = {
+      name: "shaped",
+      description: "Shaped",
+      inputSchema,
+      outputSchema,
+      execute: () => "not an object",
+    };
+    await context.registerTool(shaped);
+    const outputOnly = {
+      name: "output-only",
+      description: "Output only",
+      outputSchema: {
+        type: "object",
+        properties: { result: { type: "string", description: "The result string" } },
+        required: ["result"],
+      },
+      execute: () => ({ result: "hello" }),
+    };
+    await context.registerTool(outputOnly);
+    await context.registerTool({ name: "plain", description: "Plain", execute: () => null });
+    inputSchema.properties.query.type = "number";
+    outputSchema.properties.result.type = "number";
+    outputSchema.required.push("extra");
+
+    const tools = await context.getTools();
+    const outputTool = tools[0]!;
+    const plain = tools[1]!;
+    const shapedTool = tools[2]!;
+    const returnedOutput = shapedTool.outputSchema;
+    if (
+      typeof returnedOutput !== "object" ||
+      returnedOutput === null ||
+      !("properties" in returnedOutput)
+    ) {
+      throw new Error("shaped outputSchema was not returned");
+    }
+    const properties = Reflect.get(returnedOutput, "properties");
+    if (typeof properties !== "object" || properties === null) {
+      throw new Error("shaped outputSchema has no properties");
+    }
+    const resultProperty = Reflect.get(properties, "result");
+    if (typeof resultProperty !== "object" || resultProperty === null) {
+      throw new Error("shaped outputSchema has no result property");
+    }
+    Reflect.set(resultProperty, "type", "boolean");
+    const again = await context.getTools();
+    const copied = again[2]!;
+    return {
+      names: tools.map((tool) => tool.name),
+      plainKeys: Object.keys(plain),
+      outputKeys: Object.keys(outputTool),
+      shapedKeys: Object.keys(shapedTool),
+      hasPlainOutput: Object.hasOwn(plain, "outputSchema"),
+      hasOutputOnlyInput: Object.hasOwn(outputTool, "inputSchema"),
+      outputOnly: outputTool.outputSchema,
+      shapedInput: copied.inputSchema,
+      shapedOutput: copied.outputSchema,
+      execution: await context.executeTool(shapedTool, {}),
+    };
+  });
+
+  expect(result.names).toEqual(["output-only", "plain", "shaped"]);
+  expect(result.plainKeys).toEqual(["description", "name", "origin", "title", "window"]);
+  expect(result.outputKeys).toEqual([
+    "description",
+    "name",
+    "origin",
+    "outputSchema",
+    "title",
+    "window",
+  ]);
+  expect(result.shapedKeys).toEqual([
+    "description",
+    "inputSchema",
+    "name",
+    "origin",
+    "outputSchema",
+    "title",
+    "window",
+  ]);
+  expect(result.hasPlainOutput).toBe(false);
+  expect(result.hasOutputOnlyInput).toBe(false);
+  expect(result.outputOnly).toEqual({
+    type: "object",
+    properties: { result: { type: "string", description: "The result string" } },
+    required: ["result"],
+  });
+  expect(result.shapedInput).toEqual({
+    type: "object",
+    properties: { query: { type: "string" } },
+  });
+  expect(result.shapedOutput).toEqual({
+    type: "object",
+    properties: { result: { type: "string", description: "The result string" } },
+    required: ["result"],
+  });
+  expect(result.execution).toBe('"not an object"');
+});
+
+test("rejects an unserializable outputSchema before an aborted signal", async ({ page }) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const outcome = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const invalid: WebMCP.ModelContextTool = {
+      name: "aborted-output",
+      description: "Aborted output",
+      outputSchema: { type: "object", properties: { prop: circular } },
+      execute: () => null,
+    };
+    let rejection: unknown;
+    try {
+      await context.registerTool(invalid, { signal: AbortSignal.abort("aborted") });
+      rejection = "resolved";
+    } catch (error) {
+      rejection = error instanceof Error ? error.name : error;
+    }
+
+    let outputSerialized = false;
+    const ordering = {
+      name: "ordering",
+      description: "Ordering",
+      inputSchema: {
+        toJSON() {
+          throw new TypeError("bad input schema");
+        },
+      },
+      outputSchema: {
+        toJSON() {
+          outputSerialized = true;
+          return {};
+        },
+      },
+      execute: () => null,
+    };
+    let orderingError = "";
+    try {
+      await context.registerTool(ordering);
+    } catch (error) {
+      orderingError = error instanceof Error ? error.name : "not an error";
+    }
+
+    const stringSchema = {
+      name: "string-undefined",
+      description: "String undefined",
+      outputSchema: { toJSON: () => "undefined" },
+      execute: () => null,
+    };
+    await context.registerTool(stringSchema);
+    const tools = await context.getTools();
+    const registered = tools.find((tool) => tool.name === "string-undefined");
+    return {
+      rejection,
+      orderingError,
+      outputSerialized,
+      names: tools.map((tool) => tool.name),
+      stringSchema: registered ? registered.outputSchema : "missing",
+    };
+  });
+
+  expect(outcome).toEqual({
+    rejection: "TypeError",
+    orderingError: "TypeError",
+    outputSerialized: false,
+    names: ["string-undefined"],
+    stringSchema: "undefined",
+  });
 });
 
 test("uses dictionary coercion without retaining or binding the tool object", async ({ page }) => {

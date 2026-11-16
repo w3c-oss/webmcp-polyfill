@@ -371,6 +371,7 @@ test("execution converts every descriptor member before invoking the tool", asyn
     const invalidDescriptors = [
       { ...tool, title: Symbol() },
       { ...tool, inputSchema: 1 },
+      { ...tool, outputSchema: 1 },
       { ...tool, annotations: 1 },
       { ...tool, window: fakeWindow },
       { ...tool, window: null },
@@ -424,6 +425,10 @@ test("execution converts every descriptor member before invoking the tool", asyn
         reads.push("origin");
         return tool.origin;
       },
+      get outputSchema() {
+        reads.push("outputSchema");
+        return {};
+      },
       get title() {
         reads.push("title");
         return "Descriptor";
@@ -439,7 +444,7 @@ test("execution converts every descriptor member before invoking the tool", asyn
   });
 
   expect(result).toEqual({
-    errors: ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError"],
+    errors: ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError", "TypeError"],
     invalidCalls: 0,
     reads: [
       "annotations",
@@ -450,6 +455,7 @@ test("execution converts every descriptor member before invoking the tool", asyn
       "inputSchema",
       "name",
       "origin",
+      "outputSchema",
       "title",
       "window",
     ],

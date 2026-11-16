@@ -1106,17 +1106,16 @@ test("a same-origin frame in a closed shadow root registers and meets a later si
 test("cross-origin discovery preserves tool metadata and its owner window", async ({ page }) => {
   const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
   await owner.evaluate(async (origin) => {
-    await document.modelContext!.registerTool(
-      {
-        name: "described",
-        title: "Described",
-        description: "Described tool",
-        annotations: { debugging: true, readOnlyHint: true },
-        inputSchema: { type: "object", properties: { value: { type: "string" } } },
-        execute: () => null,
-      },
-      { exposedTo: [origin] },
-    );
+    const descriptor: WebMCP.ModelContextTool = {
+      name: "described",
+      title: "Described",
+      description: "Described tool",
+      annotations: { debugging: true, readOnlyHint: true },
+      inputSchema: { type: "object", properties: { value: { type: "string" } } },
+      outputSchema: { type: "object", properties: { value: { type: "string" } } },
+      execute: () => null,
+    };
+    await document.modelContext!.registerTool(descriptor, { exposedTo: [origin] });
   }, localOrigin);
 
   const discovered = await page.evaluate(async (origin) => {
@@ -1126,6 +1125,7 @@ test("cross-origin discovery preserves tool metadata and its owner window", asyn
       title: tool.title,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
       annotations: tool.annotations,
       origin: tool.origin,
       ownerWindow: tool.window === frames[0],
@@ -1137,6 +1137,7 @@ test("cross-origin discovery preserves tool metadata and its owner window", asyn
     title: "Described",
     description: "Described tool",
     inputSchema: { type: "object", properties: { value: { type: "string" } } },
+    outputSchema: { type: "object", properties: { value: { type: "string" } } },
     annotations: {
       consequentialHint: false,
       debugging: true,
@@ -1298,6 +1299,8 @@ test("a peer's malformed discovery replies are discarded and reported", async ({
       [{ ...tool, annotations: 42 }],
       [{ ...tool, annotations: { readOnlyHint: "yes" } }],
       [{ ...tool, serializedSchema: "{" }],
+      [{ ...tool, serializedOutputSchema: 1 }],
+      [{ ...tool, serializedOutputSchema: "{" }],
     ];
     let discovery = 0;
     const learned = Promise.withResolvers<void>();
