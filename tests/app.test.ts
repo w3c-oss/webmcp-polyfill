@@ -23,7 +23,7 @@ test("a served application executes, rejects invalid input, unregisters, and res
 
   await page.getByLabel("Amount").fill("-1");
   await page.getByRole("button", { name: "Execute on page" }).click();
-  await expect(page.locator("#result")).toHaveText("UnknownError");
+  await expect(page.locator("#result")).toHaveText("OperationError");
   await expect(page.locator("#count")).toHaveText("2");
 
   await page.getByRole("button", { name: "Unregister", exact: true }).click();

@@ -2,9 +2,11 @@ import {
   NativeDOMException,
   canDefine,
   executionError,
+  isExecutionError,
   isObject,
   queueTask,
   toolNamePattern,
+  type ExecutionFailure,
   type StoredTool,
   type ToolMetadata,
 } from "./tools.js";
@@ -27,7 +29,8 @@ interface PendingSubmission {
   phase: "waiting" | "submitting" | "handled";
   response?: Promise<unknown>;
   resolve(result: unknown): void;
-  reject(): void;
+  /** Chromium cancels with AbortError and reports a failed submission as OperationError. */
+  reject(failure: ExecutionFailure): void;
 }
 
 // Navigation resolves null; a null response serializes as "null".
@@ -238,7 +241,7 @@ export class DeclarativeTools {
         if (pending.phase === "submitting") {
           continue;
         }
-        pending.reject();
+        pending.reject("AbortError");
       }
     }
     return changed;
@@ -247,10 +250,19 @@ export class DeclarativeTools {
   #createTool(form: HTMLFormElement, definition: FormDefinition): StoredTool {
     const { name, title, description, autosubmit, serializedSchema } = definition;
     return {
-      metadata: { name, title, description, annotations: undefined, serializedSchema },
+      metadata: {
+        name,
+        title,
+        description,
+        annotations: undefined,
+        serializedSchema,
+        serializedOutputSchema: undefined,
+      },
       exposedTo: [],
       run: (input, signal, activate) => this.#execute(form, autosubmit, input, signal, activate),
       serialize: (result) => (result === navigated ? null : serializeResponse(result)),
+      // The page's own rejections arrive through respondWith(), which settles as OperationError.
+      failure: (reason) => (isExecutionError(reason) ? reason.name : "OperationError"),
     };
   }
 
@@ -261,8 +273,12 @@ export class DeclarativeTools {
     signal: AbortSignal,
     activate: () => void,
   ): Promise<unknown> {
-    if (Array.isArray(input) || (!autosubmit && !defaultButton(this.#document, form))) {
-      throw executionError();
+    if (Array.isArray(input)) {
+      throw executionError("DataError");
+    }
+    // Chromium reports a missing submit button as a failed invocation.
+    if (!autosubmit && !defaultButton(this.#document, form)) {
+      throw executionError("OperationError");
     }
     fillForm(form, input);
 
@@ -274,15 +290,15 @@ export class DeclarativeTools {
           this.#pending.delete(pending);
           resolve(result);
         },
-        reject: () => {
+        reject: (failure) => {
           this.#pending.delete(pending);
-          reject(executionError());
+          reject(executionError(failure));
         },
       };
       // A newer call rejects one that still waits for the user; Chromium leaves it pending.
-      this.#waiting(form)?.reject();
+      this.#waiting(form)?.reject("AbortError");
       this.#pending.add(pending);
-      signal.addEventListener("abort", () => pending.reject(), { once: true });
+      signal.addEventListener("abort", () => pending.reject("AbortError"), { once: true });
 
       // The explainer puts toolactivated between filling and submitting; Chromium fires it after.
       activate();
@@ -299,7 +315,7 @@ export class DeclarativeTools {
       formMember(form, "requestSubmit").call(form, submitter ?? null);
       // A form that fails validation, or cannot submit for another reason, fires no submit event.
       if (pending.phase === "waiting") {
-        pending.reject();
+        pending.reject("OperationError");
       }
     });
   }
@@ -311,11 +327,11 @@ export class DeclarativeTools {
       return;
     }
     if (pending.response) {
-      pending.response.then(pending.resolve, pending.reject);
+      pending.response.then(pending.resolve, () => pending.reject("OperationError"));
       return;
     }
     if (event.defaultPrevented) {
-      pending.reject();
+      pending.reject("OperationError");
       return;
     }
     pending.resolve(navigated);
@@ -326,7 +342,7 @@ export class DeclarativeTools {
       return;
     }
     for (const pending of this.#callsOf(event.target)) {
-      pending.reject();
+      pending.reject("AbortError");
     }
   }
 
@@ -817,7 +833,7 @@ function fillForm(form: HTMLFormElement, input: object): void {
     const parameter = controls && readParameter(controls);
     const write = parameter && prepareWrite(parameter, value);
     if (!write) {
-      throw executionError();
+      throw executionError("DataError");
     }
     return write;
   });

@@ -1,11 +1,11 @@
 {
-  "name": "webmcp-polyfill",
-  "version": "0.1.0",
+  "name": "@w3c/webmcp-polyfill",
+  "version": "0.1.1",
   "description": "A polyfill for WebMCP",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/webmachinelearning/webmcp-polyfill.git"
+    "url": "git+https://github.com/w3c-oss/webmcp-polyfill.git"
   },
   "files": [
     "dist"
@@ -29,7 +29,7 @@
     "lint": "oxlint --deny-warnings"
   },
   "dependencies": {
-    "webmcp-types": "^0.1.10"
+    "webmcp-types": "^0.1.11"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

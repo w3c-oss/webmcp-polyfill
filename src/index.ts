@@ -1,6 +1,6 @@
 /*!
- * Copyright (c) 2026 WebMCP polyfill contributors
- * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 World Wide Web Consortium
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 import type { WebMCP } from "webmcp-types";
@@ -14,6 +14,7 @@ import {
   isObject,
   queueTask,
   toolNamePattern,
+  type ExecutionFailure,
   type StoredTool,
   type ToolMetadata,
 } from "./tools.js";
@@ -36,11 +37,11 @@ const contexts = new WeakMap<Document, ModelContextPolyfill>();
  *
  * @throws {TypeError} If the window or a required DOM prototype prevents installation.
  * @example
- * import { installWebMCP } from "webmcp-polyfill";
+ * import { installWebMCP } from "@w3c/webmcp-polyfill";
  * installWebMCP();
  *
  * @see https://webmachinelearning.github.io/webmcp/#document-extension
- * @see https://github.com/webmachinelearning/webmcp-polyfill/blob/main/TESTING.md
+ * @see https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md
  */
 export function installWebMCP(): void {
   if (typeof document === "undefined" || !globalThis.isSecureContext) {
@@ -173,7 +174,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     options: WebMCP.ModelContextRegisterToolOptions = {},
   ): Promise<void> {
     const ownerDocument = this.#document;
-    const { name, title, description, annotations, inputSchema, execute } =
+    const { name, title, description, annotations, inputSchema, outputSchema, execute } =
       readToolDefinition(tool);
     const settings = readDictionary(options);
     const exposedTo = readOriginSequence(settings.exposedTo);
@@ -190,7 +191,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       }
     };
 
-    // Duplicate, then name, then description: the draft's order.
+    // Duplicate, then name, then description, then the schemas: the draft's order.
     requireUnusedName();
     if (!toolNamePattern.test(name)) {
       throw new NativeDOMException(
@@ -201,19 +202,40 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     if (!description) {
       throw new NativeDOMException("A tool description cannot be empty", "InvalidStateError");
     }
+    // inputSchema is serialized before outputSchema. Either failure rejects before the signal.
     const serializedSchema = inputSchema === undefined ? undefined : serializeJSON(inputSchema);
+    const serializedOutputSchema =
+      outputSchema === undefined ? undefined : serializeJSON(outputSchema);
     registrationSignal?.throwIfAborted();
     const exposedOrigins = parseOrigins(exposedTo);
 
     const storedTool: StoredTool = {
-      metadata: { name, title, description, annotations, serializedSchema },
+      metadata: {
+        name,
+        title,
+        description,
+        annotations,
+        serializedSchema,
+        serializedOutputSchema,
+      },
       exposedTo: exposedOrigins,
       run(input, signal, activate) {
+        let callbackResult: unknown;
+        // Web IDL turns a Promise-returning callback's exception into a rejection.
+        try {
+          // The callback runs without the registration object as its receiver.
+          callbackResult = execute(input, { signal });
+        } catch (error) {
+          callbackResult = Promise.reject(error);
+        }
+        // The draft fires toolactivated after invoking the callback, so listeners observe its
+        // synchronous effects.
         activate();
-        // The callback runs without the registration object as its receiver.
-        return execute(input, { signal });
+        return callbackResult;
       },
       serialize: serializeJSON,
+      // Any exception or rejection from the callback is the draft's "tool rejected".
+      failure: () => "OperationError",
     };
 
     const frames = await this.#requireFrames();
@@ -287,6 +309,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     }
 
     const serializedInput = serializeJSON(inputObject);
+    // A closed window, such as a removed frame's, has no navigable to run the tool in.
+    if (target.window.closed) {
+      throw executionError("InvalidStateError");
+    }
     callerSignal?.throwIfAborted();
     const frames = await this.#requireFrames();
     callerSignal?.throwIfAborted();
@@ -334,11 +360,11 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         });
       };
 
-      const rejectExecution = (): void => {
+      const rejectExecution = (failure: ExecutionFailure): void => {
         callbackPending = false;
         queueTask(() => {
           callerSignal?.removeEventListener("abort", onCallerAbort);
-          reject(executionError());
+          reject(executionError(failure));
         });
       };
 
@@ -356,7 +382,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
             resolve(serializedResult);
           });
         } catch {
-          rejectExecution();
+          rejectExecution("OperationError");
         }
       };
 
@@ -365,36 +391,55 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
           return;
         }
 
+        // executeTool() and #respond() checked Permissions Policy, which cannot change while the
+        // document lives, so only an unloaded document remains to reject here.
+        const ownerWindow = activeWindow(this.#document);
+        if (!ownerWindow) {
+          rejectExecution("AbortError");
+          return;
+        }
+        const storedTool = this.#tools.get(name);
+        // The same failure for all three keeps unexposed tools and origins from being probed.
+        if (
+          !storedTool ||
+          expectedOrigin !== ownerWindow.origin ||
+          !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)
+        ) {
+          rejectExecution("NotFoundError");
+          return;
+        }
+
+        let input: unknown;
         try {
-          const ownerWindow = requireActiveWindow(this.#document);
-          const storedTool = this.#tools.get(name);
-          if (
-            !storedTool ||
-            expectedOrigin !== ownerWindow.origin ||
-            !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)
-          ) {
-            rejectExecution();
-            return;
-          }
+          input = JSON.parse(serializedInput);
+        } catch {
+          rejectExecution("DataError");
+          return;
+        }
+        if (!isObject(input)) {
+          rejectExecution("DataError");
+          return;
+        }
 
-          const input: unknown = JSON.parse(serializedInput);
-          if (!isObject(input)) {
-            rejectExecution();
-            return;
-          }
-
-          const activate = (): void => {
-            // Listener exceptions are reported, not thrown, and the callback still runs.
-            this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
-            callbackPending = true;
-          };
+        callbackPending = true;
+        // Each tool's execute steps choose when toolactivated fires.
+        const activate = (): void => {
+          // If the tool detached this document, DOM's inner invoke skips every listener because
+          // the context's relevant global is no longer fully active. Listener exceptions are
+          // reported, not thrown.
+          this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
+        };
+        const rejectCallback = (reason: unknown): void => {
+          rejectExecution(storedTool.failure(reason));
+        };
+        try {
           const callbackResult = storedTool.run(input, callbackController.signal, activate);
           Promise.resolve(callbackResult).then(
             (value) => completeExecution(storedTool, value),
-            rejectExecution,
+            rejectCallback,
           );
-        } catch {
-          rejectExecution();
+        } catch (error) {
+          rejectCallback(error);
         }
       };
 
@@ -408,7 +453,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
   async #requireFrames(): Promise<FrameBridge> {
     const frames = this.#frames;
     if (!frames || !(await frames.allowed())) {
-      throw new NativeDOMException("WebMCP is disabled by Permissions Policy", "NotAllowedError");
+      throw new NativeDOMException(
+        'Access to the feature "tools" is disallowed by permissions policy.',
+        "NotAllowedError",
+      );
     }
     const view = requireActiveWindow(this.#document);
     this.#declarative ??= new DeclarativeTools(view, {
@@ -500,12 +548,13 @@ function readToolDefinition(value: unknown) {
   }
   // SAFETY: callability is checked above; inputs and results are converted at invocation.
   const execute = callback as WebMCP.ToolExecuteCallback<object>;
-  const inputSchema = readInputSchema(descriptor.inputSchema);
+  const inputSchema = readSchema(descriptor.inputSchema, "inputSchema");
   const name = toDOMString(requireMember(descriptor.name, "name"));
+  const outputSchema = readSchema(descriptor.outputSchema, "outputSchema");
   const rawTitle = descriptor.title;
   const title = rawTitle === undefined ? "" : toUSVString(rawTitle);
 
-  return { name, title, description, annotations, inputSchema, execute };
+  return { name, title, description, annotations, inputSchema, outputSchema, execute };
 }
 
 // Convert the whole RegisteredTool dictionary, even members not used for dispatch.
@@ -515,9 +564,10 @@ function readExecutionTarget(
   const descriptor = readDictionary(value);
   readAnnotations(descriptor.annotations);
   toDOMString(requireMember(descriptor.description, "description"));
-  readInputSchema(descriptor.inputSchema);
+  readSchema(descriptor.inputSchema, "inputSchema");
   const name = toDOMString(requireMember(descriptor.name, "name"));
   const origin = toUSVString(requireMember(descriptor.origin, "origin"));
+  readSchema(descriptor.outputSchema, "outputSchema");
   const title = descriptor.title;
   if (title !== undefined) {
     toDOMString(title);
@@ -532,9 +582,9 @@ function readExecutionTarget(
   return { name, origin, window: targetWindow as Window };
 }
 
-function readInputSchema(value: unknown): object | undefined {
+function readSchema(value: unknown, member: "inputSchema" | "outputSchema"): object | undefined {
   if (value !== undefined && !isObject(value)) {
-    throw new TypeError("inputSchema must be an object");
+    throw new TypeError(`${member} must be an object`);
   }
   return value;
 }
@@ -671,12 +721,15 @@ function isPotentiallyTrustworthy({ protocol, hostname }: URL): boolean {
 function requireActiveWindow(owner: Document): Window {
   const view = activeWindow(owner);
   if (!view) {
-    throw new NativeDOMException("The document is not fully active", "InvalidStateError");
+    throw new NativeDOMException("The document is not active.", "InvalidStateError");
   }
 
   // Synchronous where the browser exposes the policy; FrameBridge.allowed() covers the rest.
   if (readToolsPolicy(owner) === false) {
-    throw new NativeDOMException("WebMCP is disabled by Permissions Policy", "NotAllowedError");
+    throw new NativeDOMException(
+      'Access to the feature "tools" is disallowed by permissions policy.',
+      "NotAllowedError",
+    );
   }
   return view;
 }

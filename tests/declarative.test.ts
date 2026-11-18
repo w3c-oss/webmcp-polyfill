@@ -616,7 +616,7 @@ test("invalid input rejects before any control changes or the tool activates", a
   }, invalidInputs);
 
   expect(outcome).toEqual({
-    errors: Object.fromEntries(Object.keys(invalidInputs).map((label) => [label, "UnknownError"])),
+    errors: Object.fromEntries(Object.keys(invalidInputs).map((label) => [label, "DataError"])),
     events: [],
     text: "original",
   });
@@ -651,12 +651,12 @@ test("month and week inputs accept only their formats in every browser", async (
 
   expect(outcome).toEqual({
     month: "filled",
-    monthName: "UnknownError",
-    monthOutOfRange: "UnknownError",
+    monthName: "DataError",
+    monthOutOfRange: "DataError",
     week: "filled",
-    weekWithoutYear: "UnknownError",
+    weekWithoutYear: "DataError",
     week53: "filled",
-    week53OfShortYear: "UnknownError",
+    week53OfShortYear: "DataError",
   });
 });
 
@@ -723,9 +723,9 @@ test("response conversion and scripted submission settle without unhandled rejec
       number: "5",
       undefined: "undefined",
       "after awaiting": "responded late",
-      rejected: "UnknownError",
+      rejected: "OperationError",
       "form.submit()": null,
-      invalid: "UnknownError",
+      invalid: "OperationError",
     },
     submitted: false,
     unhandled: [],
@@ -863,8 +863,12 @@ test("respondWith() throws once the agent's submission settles, even without a r
     return { prevented, reset, afterReset };
   });
 
-  const settled = { result: "UnknownError", agentInvoked: true, late: "InvalidStateError" };
-  expect(outcome).toEqual({ prevented: settled, reset: settled, afterReset: "none" });
+  const settled = { agentInvoked: true, late: "InvalidStateError" };
+  expect(outcome).toEqual({
+    prevented: { result: "OperationError", ...settled },
+    reset: { result: "AbortError", ...settled },
+    afterReset: "none",
+  });
 });
 
 test("capture listeners added before or after installation see the agent's submission", async ({
@@ -940,7 +944,7 @@ test("without autosubmit or a submit button, the call rejects without filling th
     return { result, value: (document.forms[0]!.elements[0] as HTMLInputElement).value };
   });
 
-  expect(outcome).toEqual({ result: "UnknownError", value: "" });
+  expect(outcome).toEqual({ result: "OperationError", value: "" });
 });
 
 test("the first enabled submit button in tree order submits, even from outside the form", async ({
@@ -1098,9 +1102,9 @@ test("a reset, removal or new declaration cancels a waiting call; a new schema d
   });
 
   expect(outcome).toEqual({
-    reset: "UnknownError",
-    removed: "UnknownError",
-    rename: "UnknownError",
+    reset: "AbortError",
+    removed: "AbortError",
+    rename: "AbortError",
     kept: "resolved kept",
     grow: "resolved grown",
     properties: ["a", "b"],
@@ -1130,7 +1134,7 @@ test("a reset right before the page's own submission cancels the call first", as
     return { call: await call, agentInvoked };
   });
 
-  expect(outcome).toEqual({ call: "UnknownError", agentInvoked: false });
+  expect(outcome).toEqual({ call: "AbortError", agentInvoked: false });
 });
 
 test("an earlier submission read while a call waits does not become the agent's", async ({
@@ -1158,7 +1162,7 @@ test("an earlier submission read while a call waits does not become the agent's"
     return { earlier, agent: events[1]!.agentInvoked, call: await call };
   });
 
-  expect(outcome).toEqual({ earlier: false, agent: true, call: "UnknownError" });
+  expect(outcome).toEqual({ earlier: false, agent: true, call: "OperationError" });
 });
 
 test("a form moved into a shadow tree does not submit for the agent", async ({ page }) => {
@@ -1189,7 +1193,7 @@ test("a form moved into a shadow tree does not submit for the agent", async ({ p
     return { submission, call: await call };
   });
 
-  expect(outcome).toEqual({ submission: "false InvalidStateError", call: "UnknownError" });
+  expect(outcome).toEqual({ submission: "false InvalidStateError", call: "AbortError" });
 });
 
 test("a newer call rejects one that waits for the user, but not one the page is handling", async ({
@@ -1230,7 +1234,7 @@ test("a newer call rejects one that waits for the user, but not one the page is 
     return { first: await first, second: await second, echoes };
   });
 
-  expect(outcome).toEqual({ first: "UnknownError", second: "resolved 2", echoes: ["1", "2"] });
+  expect(outcome).toEqual({ first: "AbortError", second: "resolved 2", echoes: ["1", "2"] });
 });
 
 test("a reset or removal cancels every call waiting for a response", async ({
@@ -1293,8 +1297,8 @@ test("a reset or removal cancels every call waiting for a response", async ({
   });
 
   expect(outcome).toEqual({
-    reset: ["UnknownError", "UnknownError"],
-    removed: ["UnknownError", "UnknownError"],
+    reset: ["AbortError", "AbortError"],
+    removed: ["AbortError", "AbortError"],
     cancels: [],
     tools: ["reset"],
   });

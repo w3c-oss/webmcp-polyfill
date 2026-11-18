@@ -114,7 +114,7 @@ test("lifecycle event handlers keep EventHandler semantics", async ({ page }) =>
   );
 });
 
-test("toolactivated precedes the callback and toolcancel follows its aborted signal", async ({
+test("toolactivated follows the callback and toolcancel follows its aborted signal", async ({
   page,
 }) => {
   const outcome = await page.evaluate(async () => {
@@ -132,14 +132,14 @@ test("toolactivated precedes the callback and toolcancel follows its aborted sig
       observeCancel();
     });
 
-    const { promise: started, resolve: enter } = Promise.withResolvers<void>();
+    const { promise: activated, resolve: observeActivation } = Promise.withResolvers<void>();
+    context.addEventListener("toolactivated", () => observeActivation(), { once: true });
     await context.registerTool({
       name: "pending",
       description: "Pending",
       execute(_input, { signal }) {
         order.push("callback");
         signal.addEventListener("abort", () => order.push("callback aborted"), { once: true });
-        enter();
         return new Promise(() => {});
       },
     });
@@ -149,7 +149,7 @@ test("toolactivated precedes the callback and toolcancel follows its aborted sig
     const rejected = context
       .executeTool(tool, {}, { signal: controller.signal })
       .catch(() => order.push("rejected"));
-    await started;
+    await activated;
     controller.abort();
     await Promise.all([rejected, cancelled]);
 
@@ -169,7 +169,7 @@ test("toolactivated precedes the callback and toolcancel follows its aborted sig
   });
 
   expect(outcome).toEqual({
-    order: ["toolactivated", "callback", "rejected", "callback aborted", "toolcancel"],
+    order: ["callback", "toolactivated", "rejected", "callback aborted", "toolcancel"],
     events: [
       ["ToolActivatedEvent", "pending", true, false, false, false],
       ["ToolCancelEvent", "pending", true, false, false, false],

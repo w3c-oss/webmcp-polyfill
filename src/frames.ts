@@ -1,5 +1,12 @@
 import type { WebMCP } from "webmcp-types";
-import { NativeDOMException, executionError, type ToolMetadata } from "./tools.js";
+import {
+  NativeDOMException,
+  executionError,
+  isExecutionError,
+  readExecutionFailure,
+  type ExecutionFailure,
+  type ToolMetadata,
+} from "./tools.js";
 
 // Lexicographical, the order in which Web IDL reads dictionary members.
 export const annotationNames = [
@@ -111,7 +118,8 @@ export class FrameBridge {
             toRegisteredTool(readToolMetadata(value), peer, reply.origin),
           );
         } catch (error) {
-          if (!(error instanceof NativeDOMException && error.name === "UnknownError")) {
+          // Refusals and missing peers are expected; malformed replies and other errors are not.
+          if (!isExecutionError(error)) {
             console.warn("WebMCP: could not read tools from a frame.", error);
           }
           return [];
@@ -136,7 +144,7 @@ export class FrameBridge {
     );
     // A declarative tool whose form navigates has a null result.
     if (typeof reply.value !== "string" && reply.value !== null) {
-      throw executionError();
+      throw executionError("OperationError");
     }
     return reply.value;
   }
@@ -166,8 +174,17 @@ export class FrameBridge {
   ): Promise<{ value: unknown; origin: string }> {
     return new Promise((resolve, reject) => {
       signal?.throwIfAborted();
-      if (this.#hidden || !this.#related(target)) {
-        reject(executionError());
+      if (this.#hidden) {
+        reject(new NativeDOMException("The document is not active.", "InvalidStateError"));
+        return;
+      }
+      // executeTool() rejects a target that is already closed, so one closed since has unloaded.
+      if (target.closed) {
+        reject(executionError("AbortError"));
+        return;
+      }
+      if (!this.#related(target)) {
+        reject(executionError("InvalidStateError"));
         return;
       }
 
@@ -182,7 +199,7 @@ export class FrameBridge {
         this.#handshakes.delete(id);
         port1.close();
       };
-      const fail = (error: unknown = executionError()): void => {
+      const fail = (error: unknown): void => {
         port1.postMessage({ kind: "cancel" });
         close();
         reject(error);
@@ -192,7 +209,8 @@ export class FrameBridge {
         if (peerOrigin === undefined) {
           this.#forget(target);
         }
-        fail();
+        // A window that misses the deadline is treated as holding no polyfill, and so no tools.
+        fail(executionError("NotFoundError"));
       };
       const connected = (event: MessageEvent<unknown>): void => {
         if (event.source !== target) {
@@ -200,7 +218,7 @@ export class FrameBridge {
         }
         this.#handshakes.delete(id);
         if (origins && !origins.includes(event.origin)) {
-          fail();
+          fail(executionError("NotFoundError"));
           return;
         }
         peerOrigin = event.origin;
@@ -213,12 +231,12 @@ export class FrameBridge {
       };
 
       let timer = setTimeout(expire, deadline);
-      const stopWatching = this.#watch(target, fail);
+      const stopWatching = this.#watch(target, () => fail(executionError("AbortError")));
       port1.onmessage = (event: MessageEvent<unknown>) => {
         const reply = record(event.data);
         // A peer that gave up may say so before its ready message is handled here.
         if (reply?.kind === "error") {
-          fail();
+          fail(executionError(readExecutionFailure(reply.name)));
           return;
         }
         if (reply?.kind !== "result" || peerOrigin === undefined) {
@@ -227,7 +245,7 @@ export class FrameBridge {
         close();
         resolve({ value: reply.value, origin: peerOrigin });
       };
-      port1.onmessageerror = () => fail();
+      port1.onmessageerror = () => fail(executionError("OperationError"));
       signal?.addEventListener("abort", abort, { once: true });
       this.#handshakes.set(id, connected);
       // The peer's origin is unknown until it answers, and this message carries only the id.
@@ -235,7 +253,7 @@ export class FrameBridge {
         target.postMessage(`${protocol}:connect:${id}`, "*", [port2]);
       } catch {
         port2.close();
-        fail();
+        fail(executionError("OperationError"));
       }
     });
   }
@@ -312,15 +330,16 @@ export class FrameBridge {
       controller.abort();
       close();
     };
-    const fail = (): void => {
-      port.postMessage({ kind: "error" });
+    const fail = (name: ExecutionFailure): void => {
+      port.postMessage({ kind: "error", name });
       cancel();
     };
     // Tell a requester that was too slow to send its request; it may have no deadline left.
-    const timer = setTimeout(fail, deadline);
-    const stopWatching = this.#watch(source, fail);
+    const timer = setTimeout(() => fail("OperationError"), deadline);
+    // The target leaving the tree unloads its document; if the caller left, no one reads this.
+    const stopWatching = this.#watch(source, () => fail("AbortError"));
 
-    port.onmessageerror = fail;
+    port.onmessageerror = () => fail("OperationError");
     port.onmessage = async (event: MessageEvent<unknown>) => {
       const request = record(event.data);
       if (request?.kind === "cancel") {
@@ -336,8 +355,8 @@ export class FrameBridge {
         const value = await this.#respond(source, origin, request, controller.signal);
         port.postMessage({ kind: "result", value });
         close();
-      } catch {
-        fail();
+      } catch (error) {
+        fail(isExecutionError(error) ? error.name : "OperationError");
       }
     };
     source.postMessage(`${protocol}:ready:${id}`, origin);
@@ -349,8 +368,11 @@ export class FrameBridge {
     request: Record<string, unknown> | undefined,
     signal: AbortSignal,
   ): Promise<ReplyValue> {
-    if (!request || !this.#related(source)) {
-      throw executionError();
+    if (!request) {
+      throw executionError("OperationError");
+    }
+    if (!this.#related(source)) {
+      throw executionError("InvalidStateError");
     }
     if (request.kind === "permission") {
       const { childIndex, childOrigin } = request;
@@ -360,16 +382,20 @@ export class FrameBridge {
         childIndex < 0 ||
         typeof childOrigin !== "string"
       ) {
-        throw executionError();
+        throw executionError("OperationError");
       }
       return this.#childPermission(childIndex, childOrigin);
     }
-    if (!(await this.allowed()) || !(await this.#sourceAllowed(source, origin))) {
-      throw executionError();
+    if (!(await this.allowed())) {
+      // A document that may not use the API cannot register tools, so it has none to find.
+      throw executionError(this.#hidden ? "AbortError" : "NotFoundError");
+    }
+    if (!(await this.#sourceAllowed(source, origin))) {
+      throw executionError("NotAllowedError");
     }
     // The checks above may have waited on other frames.
     if (!this.#related(source)) {
-      throw executionError();
+      throw executionError("InvalidStateError");
     }
     signal.throwIfAborted();
     if (request.kind === "getTools") {
@@ -386,7 +412,7 @@ export class FrameBridge {
       await this.#handlers.changed();
       return undefined;
     }
-    throw executionError();
+    throw executionError("OperationError");
   }
 
   async #childPermission(childIndex: number, childOrigin: string): Promise<boolean> {
@@ -678,11 +704,8 @@ function toRegisteredTool(
   owner: Window,
   origin: string,
 ): WebMCP.RegisteredTool {
-  // SAFETY: the draft keeps whatever JSON toJSON produced; the cast matches RegisteredTool's type.
-  const inputSchema =
-    metadata.serializedSchema === undefined
-      ? undefined
-      : (JSON.parse(metadata.serializedSchema) as object);
+  const inputSchema = parseStoredSchema(metadata.serializedSchema);
+  const outputSchema = parseStoredSchema(metadata.serializedOutputSchema);
 
   // Insert present members in Web IDL order.
   return {
@@ -691,9 +714,18 @@ function toRegisteredTool(
     ...(inputSchema !== undefined && { inputSchema }),
     name: metadata.name,
     origin,
+    ...(outputSchema !== undefined && { outputSchema }),
     title: metadata.title,
     window: owner,
   };
+}
+
+function parseStoredSchema(serialized: string | undefined): object | undefined {
+  if (serialized === undefined) {
+    return undefined;
+  }
+  // SAFETY: the draft keeps whatever JSON toJSON produced; the cast matches the schema's object type.
+  return JSON.parse(serialized) as object;
 }
 
 // Another frame's reply is untrusted input.
@@ -703,8 +735,7 @@ function readToolMetadata(value: unknown): ToolMetadata {
     !tool ||
     typeof tool.name !== "string" ||
     typeof tool.title !== "string" ||
-    typeof tool.description !== "string" ||
-    (tool.serializedSchema !== undefined && typeof tool.serializedSchema !== "string")
+    typeof tool.description !== "string"
   ) {
     throw new TypeError("Invalid tool metadata from the frame");
   }
@@ -713,7 +744,8 @@ function readToolMetadata(value: unknown): ToolMetadata {
     title: tool.title,
     description: tool.description,
     annotations: undefined,
-    serializedSchema: tool.serializedSchema,
+    serializedSchema: readOptionalString(tool.serializedSchema),
+    serializedOutputSchema: readOptionalString(tool.serializedOutputSchema),
   };
   if (tool.annotations === undefined) {
     return metadata;
@@ -743,6 +775,16 @@ function readWindowMessage(value: unknown): { kind: string; id: string } | undef
   }
   const [namespace, kind = "", id = "", extra] = value.split(":");
   return namespace === protocol && extra === undefined ? { kind, id } : undefined;
+}
+
+function readOptionalString(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new TypeError("Invalid tool metadata from the frame");
+  }
+  return value;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

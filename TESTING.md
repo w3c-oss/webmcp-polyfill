@@ -1,31 +1,16 @@
 # Testing
 
-## Results
+## What runs
 
-**352 browser tests pass** across Chromium 153.0.8010.12, Firefox 155.0, and
-Playwright WebKit 26.6. Package checks also pass: imports, types, SSR, and tarball contents.
-CI runs these checks plus WPT in Chrome, Firefox, and actual Safari. Safari runs on
-`macos-26`; Playwright WebKit is a separate build.
+`pnpm test` runs lint, build, type checking, and real-browser tests in Chromium,
+Firefox, and Playwright WebKit. `pnpm test:package` checks imports, types, SSR, and
+tarball contents. CI runs both plus WPT in Chrome Canary, Firefox Nightly, and
+Safari on `macos-26`; its logs have the current counts and browser versions.
 
-WPT covers **all 70 WebMCP testharness files, 190 subtests**, with zero unexpected results
-in Chrome and Firefox:
-
-| Subtest result | Count |
-| --- | ---: |
-| PASS | 147 |
-| Expected FAIL | 37 |
-| Expected TIMEOUT | 5 |
-| Expected NOTRUN | 1 |
-
-Tested locally with Chrome Canary 157.0.8084.0 and Firefox Nightly 158.0a1.
-At the file level: 63 OK, five expected timeouts, two expected errors.
-Safari may report the detached-frame test before its unhandled rejection reaches
-the harness, so that file allows either OK or ERROR; its subtest must still FAIL.
-
-Expected failures are still failures. `NOTRUN` means an earlier timeout prevented
-the test from running, including one abort case. All 38 pinned IDL checks pass;
-the pinned IDL does not include the declarative `SubmitEvent` members. This is
-not full conformance.
+`pnpm test:wpt` runs every WebMCP testharness file at the pinned revision and prints
+the subtest tally. [Expectations](wpt/metadata/) record each known failure and its
+reason. Expected failures are still failures, and `NOTRUN` means an earlier timeout
+prevented the test from running. This is not full conformance.
 
 ## Run locally
 
@@ -38,9 +23,9 @@ pnpm test
 pnpm test:package
 ```
 
-`pnpm test` runs lint, build, type checking, and browser tests. Polyfill tests disable
-native WebMCP. A separate Chromium test uses `--enable-features=WebMCP` to check
-that loading the polyfill preserves the native context and its tools.
+Polyfill tests disable native WebMCP. A separate Chromium test uses
+`--enable-features=WebMCP` to check that loading the polyfill preserves the native
+context and its tools.
 
 Use WPT for shared conformance cases. Local tests cover installation, documented
 polyfill differences, and assertions that WPT does not make or reach. Compare
@@ -64,7 +49,9 @@ Safari 26.6.2 opens a native confirmation sheet when the HTTPS tests submit to
 `about:blank`. It prevents WebDriver from closing four test tabs, so WPT discards
 five subtest results and fails the completeness check at 185/190. The current
 warning does not honor `AskBeforeSubmittingInsecureForms`. Using an HTTPS form
-destination avoids the warning; that fixture repair needs to land in WPT.
+destination avoids the warning; WPT made that repair in
+[`6275ce0`](https://github.com/web-platform-tests/wpt/commit/6275ce039362b0e256e40b21d6c6f0dda3fa2481),
+after the pinned revision.
 
 Set `WPT_PYTHON` or `WPT_VENV` to use an existing Python environment. Extra arguments
 go to WPT. On macOS, Firefox may need `--certutil-binary` pointing to a wrapper that
@@ -77,18 +64,36 @@ other non-testharness files are outside this suite.
 
 ## Draft alignment and limitations
 
-Checked against [draft `d61d0e6`](https://github.com/webmachinelearning/webmcp/blob/d61d0e6d297ddb6bff3510b1330dbb215c6ef43c/index.bs)
-and `webmcp-types@0.1.10`.
+Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
+`outputSchema` follows [webmcp#254](https://github.com/webmachinelearning/webmcp/pull/254)
+(draft `6cd745a`) and lifecycle event timing follows
+[webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371) (draft `f2f2ae2`);
+the other draft changes since `eada13b` are not yet reviewed.
 
 - **Missing APIs:** scripts cannot add selectors, so the `:tool-form-active` and
   `:tool-submit-active` pseudo-classes are unsupported.
-- **Pinned WPT differences:** callback results are JSON-serialized as the draft
-  requires; some pinned tests expect raw strings.
-- **Lifecycle events:** `toolactivated` fires before the callback is invoked, as the
-  draft specifies; the pinned `executeTool-abort` test and Chromium fire it after the
-  callback starts. Script-dispatched events cannot be
+- **Draft differences:** results are JSON-serialized; some pinned tests expect raw
+  strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
+- **Lifecycle events:** script-dispatched events cannot be
   [trusted](https://dom.spec.whatwg.org/#dom-event-istrusted), so `isTrusted` is false.
-- **Declarative tools:** the draft's declarative section is a TODO, so they follow the
+- **outputSchema:** `registerTool()` accepts an optional `outputSchema`, and `getTools()`
+  returns a deep copy on `RegisteredTool`, converted and snapshotted like `inputSchema`.
+  This follows
+  [draft `6cd745a`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs).
+  An omitted schema is absent (`undefined`). WPT
+  [`9bde5b3`](https://github.com/web-platform-tests/wpt/commit/9bde5b3372c351a82884e2cc06b1a9e7e3c26185)
+  expects `null`, which matches Chromium's nullable `Tool.outputSchema` attribute, not the
+  draft dictionary.
+- **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
+  `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
+  Declarative tools follow Chromium: input that cannot fill the form rejects with
+  `DataError`, a submission that fails or is prevented without a response with
+  `OperationError`, and a call cancelled by a reset or removal with `AbortError`, as is an
+  older call that a newer one replaces. Thirteen pinned subtests fail only because they
+  expect `UnknownError`; upstream WPT moved them to these names in `22b4a4d`. Failures of
+  the polyfill's own frame messages, such as a malformed reply, have no draft counterpart
+  and reject with `OperationError`.
+- **Declarative tools:** the draft does not define them, so they follow the
   [explainer](https://github.com/webmachinelearning/webmcp/blob/d61d0e6d297ddb6bff3510b1330dbb215c6ef43c/declarative-api-explainer.md)
   and Chromium at [`dbdbb13`](https://chromium.googlesource.com/chromium/src/+/dbdbb13fd74c9411ca2e39ba087fa2e031184ff5/third_party/blink/renderer/core/html/forms/).
   Schemas match the cases in Chromium's `html_form_mcp_tool_test.cc` at that revision,
@@ -149,7 +154,8 @@ and `webmcp-types@0.1.10`.
   Opaque-origin handshakes and inaccessible cross-origin shadow frames are
   unsupported; closed shadow trees limit discovery and ordering.
 - **Deadlines:** initial discovery, handshakes, and discovery or permission replies
-  wait up to 500 ms. Late peers can be absent from results. Callbacks and
+  wait up to 500 ms. Late peers can be absent from results, and executing a tool in a
+  frame that misses the handshake deadline rejects with `NotFoundError`. Callbacks and
   `toolchange` listeners have no deadline, so an unresponsive peer can leave a call
   pending. Navigation cleanup depends on `pagehide`; removed frames are polled
   every 100 ms. Background suspension affects timing.
