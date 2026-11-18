@@ -1,13 +1,12 @@
 import type { WebMCP } from "webmcp-types";
-
-/** Tool metadata as its owner stores it and as frames exchange it. */
-export interface ToolMetadata
-  extends Pick<WebMCP.RegisteredTool, "name" | "title" | "description"> {
-  annotations: WebMCP.ToolAnnotations | undefined;
-  // Snapshots at registration; each discovery result parses a fresh copy.
-  serializedSchema: string | undefined;
-  serializedOutputSchema: string | undefined;
-}
+import {
+  NativeDOMException,
+  executionError,
+  isExecutionError,
+  readExecutionFailure,
+  type ExecutionFailure,
+  type ToolMetadata,
+} from "./tools.js";
 
 // Lexicographical, the order in which Web IDL reads dictionary members.
 export const annotationNames = [
@@ -24,7 +23,7 @@ interface Handlers {
     name: string,
     serializedInput: string,
     signal: AbortSignal,
-  ): Promise<string>;
+  ): Promise<string | null>;
   changed(): Promise<void>;
 }
 
@@ -34,7 +33,7 @@ type Request =
   | { kind: "execute"; name: string; input: string }
   | { kind: "changed" };
 
-type ReplyValue = boolean | ToolMetadata[] | string | undefined;
+type ReplyValue = boolean | ToolMetadata[] | string | null | undefined;
 
 interface Session {
   peer: Window;
@@ -44,7 +43,6 @@ interface Session {
 const protocol = "webmcp-polyfill";
 // Bounds handshakes, discovery, and permission replies; author code has no deadline.
 const deadline = 500;
-const NativeDOMException = globalThis.DOMException;
 
 export class FrameBridge {
   readonly #document: Document;
@@ -137,14 +135,15 @@ export class FrameBridge {
     name: string,
     serializedInput: string,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<string | null> {
     const reply = await this.#request(
       target,
       [expectedOrigin],
       { kind: "execute", name, input: serializedInput },
       signal,
     );
-    if (typeof reply.value !== "string") {
+    // A declarative tool whose form navigates has a null result.
+    if (typeof reply.value !== "string" && reply.value !== null) {
       throw executionError("OperationError");
     }
     return reply.value;
@@ -802,38 +801,4 @@ function isWindow(value: MessageEventSource): value is Window {
   } catch {
     return false;
   }
-}
-
-// The first four names are the draft's tool execution errors:
-// https://webmachinelearning.github.io/webmcp/#tool-execution-error
-// InvalidStateError and NotAllowedError come from other executeTool() steps. Protocol failures
-// without a draft counterpart, such as a malformed reply, are reported as OperationError.
-// The messages are Chromium's: https://crrev.com/c/8546218
-const executionFailures = {
-  NotFoundError: "The requested tool was not found or is not accessible.",
-  DataError: "Failed to parse tool input arguments.",
-  OperationError: "Tool execution failed.",
-  AbortError: "Tool execution aborted.",
-  InvalidStateError: "Target frame is not accessible.",
-  NotAllowedError: 'Access to the feature "tools" is disallowed by permissions policy.',
-} as const;
-
-export type ExecutionFailure = keyof typeof executionFailures;
-
-export function executionError(name: ExecutionFailure): DOMException {
-  // Each name has one fixed message, so a message reveals nothing beyond its name.
-  return new NativeDOMException(executionFailures[name], name);
-}
-
-function isExecutionError(error: unknown): error is DOMException & { name: ExecutionFailure } {
-  return error instanceof NativeDOMException && Object.hasOwn(executionFailures, error.name);
-}
-
-// Another frame's reply is untrusted input.
-function readExecutionFailure(value: unknown): ExecutionFailure {
-  if (typeof value === "string" && Object.hasOwn(executionFailures, value)) {
-    // SAFETY: the own-property check above limits the string to the table's names.
-    return value as ExecutionFailure;
-  }
-  return "OperationError";
 }

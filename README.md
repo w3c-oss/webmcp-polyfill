@@ -53,6 +53,33 @@ registration.abort();
 
 If you'd rather install it yourself, call `installWebMCP()` from `@w3c/webmcp-polyfill`. Calling it more than once is fine. Neither entry point replaces a native `document.modelContext`, even a partial one.
 
+### Declarative tools
+
+A form with `toolname` and `tooldescription` attributes is a tool. Its named controls make up the input schema, each described by its `toolparamdescription`, label, or `aria-description`. Disabled controls and controls with an applicable `readonly` attribute are left out. When multiple checkboxes or multiple radio buttons share a name, they form one parameter, described by the `toolparamdescription` of the nearest `fieldset` around them:
+
+```html
+<form toolname="search-flights" tooldescription="Search for flights" toolautosubmit>
+  <label>From <input name="from" required></label>
+  <label>To <input name="to" required></label>
+  <label>Date <input name="date" type="date"></label>
+  <button>Search</button>
+</form>
+```
+
+A call fills the form, then submits it if the form has `toolautosubmit`. Without that attribute, the form needs an enabled submit button: the call focuses it and waits for the form's next submission. A submission the page does not cancel resolves the call with `null`, as does `form.submit()`; one it cancels without responding rejects the call. To respond, call `preventDefault()` and then `respondWith()` in the `submit` listener:
+
+```js
+const form = document.querySelector('form[toolname="search-flights"]');
+form.addEventListener("submit", (event) => {
+  if (event.agentInvoked) {
+    event.preventDefault();
+    event.respondWith(searchFlights(new FormData(form)));
+  }
+});
+```
+
+The call resolves with the response: objects are JSON-serialized, and other values are converted to strings. A rejected response or a form reset rejects the call. So does removing the form or changing its tool attributes, unless the page does that during the agent's `submit` event.
+
 ### Script tag
 
 The package also ships a standalone build at `dist/polyfill.js`. Load it before your app:
@@ -88,15 +115,15 @@ For cross-origin tools, delegate the `tools` permission on the iframe, register 
 <iframe src="https://tools.example/app" allow="tools https://tools.example"></iframe>
 ```
 
-Initial discovery waits up to 500 ms for existing frames. Requests use `MessageChannel` after checking the peer's source and origin; callbacks run in their owning frame. Cancellation preserves the caller's reason and sends the callback a default `AbortError`.
+Initial discovery waits up to 500 ms for existing frames. Callbacks run in their owning frame. Cancellation preserves the caller's reason and sends the callback a default `AbortError`.
 
 ## Implementation status
 
-The polyfill targets `webmcp-types@0.1.10` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
+The polyfill targets `webmcp-types@0.1.10` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. It also implements declarative tools, which follow the [declarative API explainer](https://github.com/webmachinelearning/webmcp/blob/main/declarative-api-explainer.md) and Chromium because the draft leaves them unwritten. The `:tool-form-active` and `:tool-submit-active` pseudo-classes are not implemented. Talking to an actual browser agent needs support from the browser itself.
 
 Native contexts do not join the polyfill's channels. [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) lists the known differences from the draft, the test commands, and the spec and WPT revisions we test against.
 
-`executeTool()` accepts an object and returns a JSON-serialized result. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
+`executeTool()` accepts an object and returns a JSON-serialized result, or a declarative tool's response, which is `null` if its form navigates. Omitted or `undefined` input defaults to a fresh empty object. Callbacks must validate their inputs; schema inference provides TypeScript checks only.
 
 A failed execution rejects with the draft's `DOMException` name, such as `NotFoundError` or `OperationError`, rather than the callback's own error.
 

@@ -4,27 +4,24 @@
  */
 
 import type { WebMCP } from "webmcp-types";
+import { DeclarativeTools, installDeclarative } from "./declarative.js";
 import { ToolActivatedEvent, ToolCancelEvent } from "./events.js";
+import { FrameBridge, activeWindow, annotationNames, readToolsPolicy } from "./frames.js";
 import {
-  FrameBridge,
-  activeWindow,
-  annotationNames,
+  NativeDOMException,
+  canDefine,
   executionError,
-  readToolsPolicy,
+  isObject,
+  queueTask,
+  toolNamePattern,
   type ExecutionFailure,
+  type StoredTool,
   type ToolMetadata,
-} from "./frames.js";
+} from "./tools.js";
 export type { WebMCP } from "webmcp-types";
 
-// Detached windows may stop exposing these bindings.
-const NativeDOMException = globalThis.DOMException;
+// Detached windows may stop exposing this binding.
 const getWindow = Object.getOwnPropertyDescriptor(globalThis, "window")?.get;
-
-interface StoredTool {
-  metadata: ToolMetadata;
-  execute: WebMCP.ToolExecuteCallback<object>;
-  exposedTo: string[];
-}
 
 const contexts = new WeakMap<Document, ModelContextPolyfill>();
 
@@ -38,7 +35,7 @@ const contexts = new WeakMap<Document, ModelContextPolyfill>();
  * Installing joins cross-frame discovery: the window listens for the polyfill's messages and
  * announces itself to the other frames of its tree.
  *
- * @throws {TypeError} If the window or Document prototype prevents installation.
+ * @throws {TypeError} If the window or a required DOM prototype prevents installation.
  * @example
  * import { installWebMCP } from "@w3c/webmcp-polyfill";
  * installWebMCP();
@@ -61,19 +58,23 @@ export function installWebMCP(): void {
     ToolActivatedEvent,
     ToolCancelEvent,
   };
-  const canDefineInterface = (name: string): boolean => {
-    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-    return descriptor ? descriptor.configurable === true : Object.isExtensible(globalThis);
-  };
   if (
     !Object.isExtensible(documentPrototype) ||
-    !Object.keys(interfaceObjects).every(canDefineInterface)
+    !Object.keys(interfaceObjects).every((name) => canDefine(globalThis, name))
   ) {
     throw new TypeError("Cannot install WebMCP on this realm");
   }
 
+  // Declarative tools patch other prototypes, so they go first: a refusal leaves nothing installed.
+  installDeclarative();
+  // Redefining a page's own global retains unspecified attributes.
   for (const [name, value] of Object.entries(interfaceObjects)) {
-    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+    Object.defineProperty(globalThis, name, {
+      value,
+      configurable: true,
+      writable: true,
+      enumerable: false,
+    });
   }
 
   // A method is non-constructible; defaultView supplies the native Document brand check.
@@ -103,6 +104,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
   readonly #tools = new Map<string, StoredTool>();
   // Only a document that was active when its context was created has a bridge.
   readonly #frames?: FrameBridge;
+  #declarative?: DeclarativeTools;
   readonly #eventHandlers: EventHandlers = {
     ontoolchange: null,
     ontoolactivated: null,
@@ -137,6 +139,8 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       },
       changed: () => this.#queueToolChange(),
     });
+    // Try form discovery now; public operations retry failed policy checks.
+    this.#requireFrames().catch(() => {});
   }
 
   get ontoolchange(): WebMCP.ModelContext["ontoolchange"] {
@@ -178,6 +182,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
 
     requireActiveWindow(ownerDocument);
     const requireUnusedName = (): void => {
+      this.#declarative?.release();
       if (this.#tools.has(name)) {
         throw new NativeDOMException(
           `A tool named ${name} is already registered`,
@@ -188,7 +193,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
 
     // Duplicate, then name, then description, then the schemas: the draft's order.
     requireUnusedName();
-    if (!/^[A-Za-z0-9_.-]{1,128}$/u.test(name)) {
+    if (!toolNamePattern.test(name)) {
       throw new NativeDOMException(
         `Tool names are 1 to 128 characters of ASCII alphanumerics, "_", "-" or ".": ${name}`,
         "InvalidStateError",
@@ -213,8 +218,24 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         serializedSchema,
         serializedOutputSchema,
       },
-      execute,
       exposedTo: exposedOrigins,
+      run(input, signal, activate) {
+        let callbackResult: unknown;
+        // Web IDL turns a Promise-returning callback's exception into a rejection.
+        try {
+          // The callback runs without the registration object as its receiver.
+          callbackResult = execute(input, { signal });
+        } catch (error) {
+          callbackResult = Promise.reject(error);
+        }
+        // The draft fires toolactivated after invoking the callback, so listeners observe its
+        // synchronous effects.
+        activate();
+        return callbackResult;
+      },
+      serialize: serializeJSON,
+      // Any exception or rejection from the callback is the draft's "tool rejected".
+      failure: () => "OperationError",
     };
 
     const frames = await this.#requireFrames();
@@ -229,6 +250,8 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         () => {
           this.#tools.delete(name);
           void frames.notify(exposedOrigins);
+          // A form waiting for this name can claim it now.
+          this.#declarative?.update();
           reject(registrationSignal.reason);
         },
         { once: true },
@@ -294,23 +317,19 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     const frames = await this.#requireFrames();
     callerSignal?.throwIfAborted();
     const callerWindow = requireActiveWindow(ownerDocument);
-    if (target.window !== callerWindow) {
-      return frames.execute(
-        target.window,
-        expectedOrigin,
-        target.name,
-        serializedInput,
-        callerSignal,
-      );
-    }
-
-    return this.#executeLocal(
-      target.name,
-      serializedInput,
-      expectedOrigin,
-      callerWindow.origin,
-      callerSignal,
-    );
+    const result =
+      target.window === callerWindow
+        ? this.#executeLocal(
+            target.name,
+            serializedInput,
+            expectedOrigin,
+            callerWindow.origin,
+            callerSignal,
+          )
+        : frames.execute(target.window, expectedOrigin, target.name, serializedInput, callerSignal);
+    // Declarative navigation resolves null in Chromium and WPT, although the draft and
+    // webmcp-types declare a string result.
+    return result as Promise<string>;
   }
 
   #executeLocal(
@@ -319,8 +338,8 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     expectedOrigin: string,
     callerOrigin: string,
     callerSignal?: AbortSignal,
-  ): Promise<string> {
-    return new Promise<string>((resolve, reject) => {
+  ): Promise<string | null> {
+    return new Promise<string | null>((resolve, reject) => {
       callerSignal?.throwIfAborted();
       const callbackController = new AbortController();
       // The draft's local pending tool execution: it exists from invocation until the callback
@@ -349,7 +368,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         });
       };
 
-      const completeExecution = (value: unknown): void => {
+      const completeExecution = (storedTool: StoredTool, value: unknown): void => {
         callbackPending = false;
         // A cancelled call must not run the author's toJSON during serialization.
         if (callerSignal?.aborted) {
@@ -357,7 +376,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         }
 
         try {
-          const serializedResult = serializeJSON(value);
+          const serializedResult = storedTool.serialize(value);
           queueTask(() => {
             callerSignal?.removeEventListener("abort", onCallerAbort);
             resolve(serializedResult);
@@ -366,7 +385,6 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
           rejectExecution("OperationError");
         }
       };
-      const rejectCallback = (): void => rejectExecution("OperationError");
 
       const dispatchTool = (): void => {
         if (callerSignal?.aborted) {
@@ -404,21 +422,25 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         }
 
         callbackPending = true;
-        // A Promise-returning callback that throws is treated as a rejection.
+        // Each tool's execute steps choose when toolactivated fires.
+        const activate = (): void => {
+          // If the tool detached this document, DOM's inner invoke skips every listener because
+          // the context's relevant global is no longer fully active. Listener exceptions are
+          // reported, not thrown.
+          this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
+        };
+        const rejectCallback = (reason: unknown): void => {
+          rejectExecution(storedTool.failure(reason));
+        };
         try {
-          // The callback runs without the registration object as its receiver.
-          const execute = storedTool.execute;
-          const callbackResult = execute(input, { signal: callbackController.signal });
-          Promise.resolve(callbackResult).then(completeExecution, rejectCallback);
-        } catch {
-          rejectCallback();
+          const callbackResult = storedTool.run(input, callbackController.signal, activate);
+          Promise.resolve(callbackResult).then(
+            (value) => completeExecution(storedTool, value),
+            rejectCallback,
+          );
+        } catch (error) {
+          rejectCallback(error);
         }
-
-        // The draft fires toolactivated after invoking the callback, so listeners observe its
-        // synchronous effects. If the callback detached this document, DOM's inner invoke skips
-        // every listener because the context's relevant global is no longer fully active.
-        // Listener exceptions are reported, not thrown.
-        this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
       };
 
       callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
@@ -426,6 +448,8 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     });
   }
 
+  // The first check that passes also turns the document's forms into tools. In a cross-origin
+  // frame, that can be a later check, once its ancestors have installed the polyfill.
   async #requireFrames(): Promise<FrameBridge> {
     const frames = this.#frames;
     if (!frames || !(await frames.allowed())) {
@@ -434,7 +458,11 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         "NotAllowedError",
       );
     }
-    requireActiveWindow(this.#document);
+    const view = requireActiveWindow(this.#document);
+    this.#declarative ??= new DeclarativeTools(view, {
+      tools: this.#tools,
+      changed: () => void frames.notify([]),
+    });
     return frames;
   }
 
@@ -530,7 +558,9 @@ function readToolDefinition(value: unknown) {
 }
 
 // Convert the whole RegisteredTool dictionary, even members not used for dispatch.
-function readExecutionTarget(value: unknown) {
+function readExecutionTarget(
+  value: unknown,
+): Pick<WebMCP.RegisteredTool, "name" | "origin" | "window"> {
   const descriptor = readDictionary(value);
   readAnnotations(descriptor.annotations);
   toDOMString(requireMember(descriptor.description, "description"));
@@ -557,10 +587,6 @@ function readSchema(value: unknown, member: "inputSchema" | "outputSchema"): obj
     throw new TypeError(`${member} must be an object`);
   }
   return value;
-}
-
-function isObject(value: unknown): value is object {
-  return (typeof value === "object" && value !== null) || typeof value === "function";
 }
 
 // https://webidl.spec.whatwg.org/#es-dictionary
@@ -706,19 +732,4 @@ function requireActiveWindow(owner: Document): Window {
     );
   }
   return view;
-}
-
-// Message tasks approximate the WebMCP task source. Chained zero-delay timers are clamped to
-// 4 ms, and one port keeps the tasks in order. Created on first use so an import stays inert.
-let taskPort: MessagePort | undefined;
-const queuedTasks: (() => void)[] = [];
-
-function queueTask(callback: () => void): void {
-  if (!taskPort) {
-    const channel = new MessageChannel();
-    channel.port1.onmessage = () => queuedTasks.shift()?.();
-    taskPort = channel.port2;
-  }
-  queuedTasks.push(callback);
-  taskPort.postMessage(undefined);
 }
