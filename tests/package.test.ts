@@ -49,6 +49,8 @@ try {
     "dist/index.d.ts",
     "dist/index.js",
     "dist/polyfill.js",
+    "dist/tool.d.ts",
+    "dist/tool.js",
     "package.json",
   ]);
   assert.match(
@@ -94,6 +96,10 @@ try {
       if (!tool) {
         throw new Error('The registered tool was not discovered');
       }
+      const source: WindowProxy | null = tool.source;
+      const inputSchema: object | null = tool.inputSchema;
+      // @ts-expect-error Tool attributes are read-only.
+      tool.name = 'renamed';
       const omitted: string = await context.executeTool(tool);
       const explicitUndefined: string = await context.executeTool(tool, undefined, {
         signal: new AbortController().signal,

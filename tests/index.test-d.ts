@@ -37,6 +37,12 @@ if (document.modelContext) {
   }
   const debugging: boolean | undefined = tool.annotations?.debugging;
   void debugging;
+  const source: WindowProxy | null = tool.source;
+  const outputSchema: object | null = tool.outputSchema;
+  void source;
+  void outputSchema;
+  // @ts-expect-error Tool attributes are read-only.
+  tool.name = "renamed";
   const result: string = await context.executeTool(
     tool,
     {},
