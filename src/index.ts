@@ -14,11 +14,11 @@ import {
   type ExecutionFailure,
   type ToolMetadata,
 } from "./frames.js";
+import { activeSource, createTool, readToolState, toolConstructor } from "./tool.js";
 export type { WebMCP } from "webmcp-types";
 
 // Detached windows may stop exposing these bindings.
 const NativeDOMException = globalThis.DOMException;
-const getWindow = Object.getOwnPropertyDescriptor(globalThis, "window")?.get;
 
 interface StoredTool {
   metadata: ToolMetadata;
@@ -58,6 +58,7 @@ export function installWebMCP(): void {
   const getDefaultView = Object.getOwnPropertyDescriptor(documentPrototype, "defaultView")!.get!;
   const interfaceObjects = {
     ModelContext: modelContextConstructor,
+    Tool: toolConstructor,
     ToolActivatedEvent,
     ToolCancelEvent,
   };
@@ -131,9 +132,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     }
     this.#frames = new FrameBridge(view, {
       getTools: (callerOrigin) => this.#exposedTools(callerOrigin),
-      execute: (callerOrigin, name, serializedInput, signal) => {
-        const ownerOrigin = requireActiveWindow(owner).origin;
-        return this.#executeLocal(name, serializedInput, ownerOrigin, callerOrigin, signal);
+      execute: (callerOrigin, toolId, serializedInput, signal) => {
+        // An owner that unloaded or lost the tools permission rejects before any lookup.
+        requireActiveWindow(owner);
+        return this.#executeLocal(toolId, serializedInput, callerOrigin, signal);
       },
       changed: () => this.#queueToolChange(),
     });
@@ -178,11 +180,13 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
 
     requireActiveWindow(ownerDocument);
     const requireUnusedName = (): void => {
-      if (this.#tools.has(name)) {
-        throw new NativeDOMException(
-          `A tool named ${name} is already registered`,
-          "InvalidStateError",
-        );
+      for (const storedTool of this.#tools.values()) {
+        if (storedTool.metadata.name === name) {
+          throw new NativeDOMException(
+            `A tool named ${name} is already registered`,
+            "InvalidStateError",
+          );
+        }
       }
     };
 
@@ -204,8 +208,10 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     registrationSignal?.throwIfAborted();
     const exposedOrigins = parseOrigins(exposedTo);
 
+    const toolId = crypto.randomUUID();
     const storedTool: StoredTool = {
       metadata: {
+        id: toolId,
         name,
         title,
         description,
@@ -223,25 +229,24 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     requireUnusedName();
 
     return new Promise<void>((resolve, reject) => {
-      // Abort unregisters the tool and also rejects any pending registration.
+      // Abort unregisters this registration, never a later one with the same name, and also
+      // rejects the registration if it is still pending.
       registrationSignal?.addEventListener(
         "abort",
         () => {
-          this.#tools.delete(name);
+          this.#tools.delete(toolId);
           void frames.notify(exposedOrigins);
           reject(registrationSignal.reason);
         },
         { once: true },
       );
 
-      this.#tools.set(name, storedTool);
+      this.#tools.set(toolId, storedTool);
       frames.notify(exposedOrigins).then(resolve, reject);
     });
   }
 
-  async getTools(
-    options: WebMCP.ModelContextGetToolOptions = {},
-  ): Promise<WebMCP.RegisteredTool[]> {
+  async getTools(options: WebMCP.ModelContextGetToolOptions = {}): Promise<WebMCP.Tool[]> {
     const ownerDocument = this.#document;
     const settings = readDictionary(options);
     const fromOrigins = readOriginSequence(settings.fromOrigins);
@@ -250,73 +255,70 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     const frames = await this.#requireFrames();
     const requestedOrigins = parseOrigins(fromOrigins);
 
-    const tools = await frames.getTools(requestedOrigins);
+    const snapshots = await frames.getTools(requestedOrigins);
 
     // Compare code units; localeCompare() would change the draft's sort order.
-    tools.sort((left, right) => {
+    snapshots.sort((left, right) => {
       if (left.name === right.name) {
         return 0;
       }
       return left.name < right.name ? -1 : 1;
     });
 
-    // The draft resolves from a queued task.
+    // The draft creates the Tool objects and resolves from a queued task.
     return new Promise((resolve) => {
-      queueTask(() => resolve(tools));
+      queueTask(() => resolve(snapshots.map(createTool)));
     });
   }
 
   async executeTool(
-    tool: WebMCP.RegisteredTool,
+    tool: WebMCP.Tool,
     inputObject: object = {},
     options: WebMCP.ModelContextExecuteToolOptions = {},
   ): Promise<string> {
     const ownerDocument = this.#document;
-    const target = readExecutionTarget(tool);
+    const target = readToolState(tool);
     const settings = readDictionary(options);
     const callerSignal = readAbortSignal(settings.signal);
 
     requireActiveWindow(ownerDocument);
-    const expectedOrigin = URL.parse(target.origin)?.origin;
-    if (!expectedOrigin || expectedOrigin === "null") {
-      throw new NativeDOMException("Invalid or opaque origin", "NotSupportedError");
+    // A Tool's origin is the serialization of its registering document's; an opaque one is "null".
+    if (target.origin === "null") {
+      throw new NativeDOMException(
+        "Tools registered by documents with an opaque origin cannot be executed",
+        "NotSupportedError",
+      );
     }
     if (!isObject(inputObject)) {
       throw new TypeError("inputObject must be an object");
     }
 
     const serializedInput = serializeJSON(inputObject);
-    // A closed window, such as a removed frame's, has no navigable to run the tool in.
-    if (target.window.closed) {
+    const targetWindow = activeSource(target);
+    if (!targetWindow) {
       throw executionError("InvalidStateError");
     }
     callerSignal?.throwIfAborted();
     const frames = await this.#requireFrames();
     callerSignal?.throwIfAborted();
     const callerWindow = requireActiveWindow(ownerDocument);
-    if (target.window !== callerWindow) {
+    if (targetWindow !== callerWindow) {
       return frames.execute(
-        target.window,
-        expectedOrigin,
-        target.name,
+        targetWindow,
+        target.origin,
+        target.documentId,
+        target.id,
         serializedInput,
         callerSignal,
       );
     }
 
-    return this.#executeLocal(
-      target.name,
-      serializedInput,
-      expectedOrigin,
-      callerWindow.origin,
-      callerSignal,
-    );
+    return this.#executeLocal(target.id, serializedInput, callerWindow.origin, callerSignal);
   }
 
   #executeLocal(
-    name: string,
+    toolId: string,
     serializedInput: string,
-    expectedOrigin: string,
     callerOrigin: string,
     callerSignal?: AbortSignal,
   ): Promise<string> {
@@ -326,6 +328,8 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       // The draft's local pending tool execution: it exists from invocation until the callback
       // settles or the call is cancelled, and a late cancellation must not abort or report it.
       let callbackPending = false;
+      // Known once the tool is found; a cancellation before then dispatches no event.
+      let toolName = "";
 
       const onCallerAbort = (): void => {
         reject(callerSignal!.reason);
@@ -337,7 +341,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
           }
           callbackPending = false;
           callbackController.abort();
-          this.dispatchEvent(new ToolCancelEvent("toolcancel", { toolName: name }));
+          this.dispatchEvent(new ToolCancelEvent("toolcancel", { toolName }));
         });
       };
 
@@ -380,16 +384,14 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
           rejectExecution("AbortError");
           return;
         }
-        const storedTool = this.#tools.get(name);
-        // The same failure for all three keeps unexposed tools and origins from being probed.
-        if (
-          !storedTool ||
-          expectedOrigin !== ownerWindow.origin ||
-          !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)
-        ) {
+        // The registration may have been removed since getTools(), even if another tool now has
+        // its name. The same failure for an unexposed tool keeps it from being probed.
+        const storedTool = this.#tools.get(toolId);
+        if (!storedTool || !isExposedTo(storedTool, ownerWindow.origin, callerOrigin)) {
           rejectExecution("NotFoundError");
           return;
         }
+        toolName = storedTool.metadata.name;
 
         let input: unknown;
         try {
@@ -418,7 +420,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         // synchronous effects. If the callback detached this document, DOM's inner invoke skips
         // every listener because the context's relevant global is no longer fully active.
         // Listener exceptions are reported, not thrown.
-        this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName: name }));
+        this.dispatchEvent(new ToolActivatedEvent("toolactivated", { toolName }));
       };
 
       callerSignal?.addEventListener("abort", onCallerAbort, { once: true });
@@ -527,29 +529,6 @@ function readToolDefinition(value: unknown) {
   const title = rawTitle === undefined ? "" : toUSVString(rawTitle);
 
   return { name, title, description, annotations, inputSchema, outputSchema, execute };
-}
-
-// Convert the whole RegisteredTool dictionary, even members not used for dispatch.
-function readExecutionTarget(value: unknown) {
-  const descriptor = readDictionary(value);
-  readAnnotations(descriptor.annotations);
-  toDOMString(requireMember(descriptor.description, "description"));
-  readSchema(descriptor.inputSchema, "inputSchema");
-  const name = toDOMString(requireMember(descriptor.name, "name"));
-  const origin = toUSVString(requireMember(descriptor.origin, "origin"));
-  readSchema(descriptor.outputSchema, "outputSchema");
-  const title = descriptor.title;
-  if (title !== undefined) {
-    toDOMString(title);
-  }
-  const targetWindow = requireMember(descriptor.window, "window");
-  if (!isObject(targetWindow)) {
-    throw new TypeError("window must be a Window");
-  }
-  getWindow!.call(targetWindow);
-
-  // SAFETY: the native getter above validated the Window brand without changing identity.
-  return { name, origin, window: targetWindow as Window };
 }
 
 function readSchema(value: unknown, member: "inputSchema" | "outputSchema"): object | undefined {

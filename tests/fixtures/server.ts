@@ -47,6 +47,7 @@ const pages: Record<string, string> = {
   "/health": blankHtml,
   "/app": appHtml,
   "/frame": frameHtml,
+  "/opaque": frameHtml,
   "/startup": startupHtml,
   "/startup-discovery": startupDiscoveryHtml,
 };
@@ -63,6 +64,10 @@ createServer(async (request, response) => {
       response.setHeader("Content-Type", "text/javascript");
       response.end(source);
     } else if (page) {
+      if (path === "/opaque") {
+        // Without allow-same-origin, the sandboxed document gets an opaque origin.
+        response.setHeader("Content-Security-Policy", "sandbox allow-scripts");
+      }
       response.setHeader("Content-Type", "text/html");
       response.end(page);
     } else {

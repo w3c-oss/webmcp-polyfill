@@ -351,35 +351,30 @@ test("aborting before the dispatch task rejects without starting the callback", 
   expect(outcome).toEqual([0, "before dispatch"]);
 });
 
-test("execution converts every descriptor member before invoking the tool", async ({ page }) => {
+test("execution accepts only Tool objects returned by getTools()", async ({ page }) => {
   const result = await page.evaluate(async () => {
     const context = document.modelContext!;
     let calls = 0;
 
     await context.registerTool({
-      name: "descriptor",
-      description: "Descriptor conversion",
+      name: "x",
+      description: "X",
       execute() {
         return ++calls;
       },
     });
 
     const tool = (await context.getTools())[0]!;
+    const toolInterface = Reflect.get(window, "Tool");
+    // Copies an attribute value onto a plain object for every Tool attribute.
+    const attributes = Object.fromEntries(
+      Object.keys(toolInterface.prototype).map((key) => [key, Reflect.get(tool, key)]),
+    );
+    const notTools = [{ ...tool }, attributes, Object.create(toolInterface.prototype), null, "x"];
     const errors = [];
-    const fakeWindow = {};
-    Object.assign(fakeWindow, { window: fakeWindow });
-    const invalidDescriptors = [
-      { ...tool, title: Symbol() },
-      { ...tool, inputSchema: 1 },
-      { ...tool, outputSchema: 1 },
-      { ...tool, annotations: 1 },
-      { ...tool, window: fakeWindow },
-      { ...tool, window: null },
-    ];
-    for (const descriptor of invalidDescriptors) {
+    for (const notTool of notTools) {
       try {
-        // @ts-expect-error Exercise invalid JavaScript descriptor members.
-        await context.executeTool(descriptor, {});
+        await context.executeTool(notTool, {});
         errors.push("resolved");
       } catch (error) {
         if (!(error instanceof Error)) {
@@ -388,142 +383,79 @@ test("execution converts every descriptor member before invoking the tool", asyn
         errors.push(error.name);
       }
     }
-
     const invalidCalls = calls;
-    const reads: string[] = [];
-    const descriptor = {
-      get annotations() {
-        reads.push("annotations");
-        return {
-          get consequentialHint() {
-            reads.push("consequentialHint");
-            return false;
-          },
-          get readOnlyHint() {
-            reads.push("readOnlyHint");
-            return false;
-          },
-          get untrustedContentHint() {
-            reads.push("untrustedContentHint");
-            return false;
-          },
-        };
-      },
-      get description() {
-        reads.push("description");
-        return tool.description;
-      },
-      get inputSchema() {
-        reads.push("inputSchema");
-        return {};
-      },
-      get name() {
-        reads.push("name");
-        return tool.name;
-      },
-      get origin() {
-        reads.push("origin");
-        return tool.origin;
-      },
-      get outputSchema() {
-        reads.push("outputSchema");
-        return {};
-      },
-      get title() {
-        reads.push("title");
-        return "Descriptor";
-      },
-      get window() {
-        reads.push("window");
-        return tool.window;
-      },
-    };
-
-    await context.executeTool(descriptor, {});
-    return { errors, invalidCalls, reads, calls };
+    return { errors, invalidCalls, result: await context.executeTool(tool, {}) };
   });
 
   expect(result).toEqual({
-    errors: ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError", "TypeError"],
+    errors: ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError"],
     invalidCalls: 0,
-    reads: [
-      "annotations",
-      "consequentialHint",
-      "readOnlyHint",
-      "untrustedContentHint",
-      "description",
-      "inputSchema",
-      "name",
-      "origin",
-      "outputSchema",
-      "title",
-      "window",
-    ],
-    calls: 1,
+    result: "1",
   });
 });
 
-test("execution rejects when the target frame has no tool with that name", async ({ page }) => {
+test("a stale Tool does not run a tool registered again under its name", async ({ page }) => {
   const outcome = await page.evaluate(async () => {
     const context = document.modelContext!;
+    const registration = new AbortController();
+    const executed: string[] = [];
 
-    await context.registerTool({ name: "local", description: "Local", execute: () => null });
+    await context.registerTool(
+      {
+        name: "reused",
+        description: "First",
+        execute: () => executed.push("first"),
+      },
+      { signal: registration.signal },
+    );
+    const [staleTool] = await context.getTools();
 
-    const tool = (await context.getTools())[0]!;
-    const iframe = document.createElement("iframe");
-    iframe.src = "/app";
-    await new Promise<void>((resolve) => {
-      iframe.onload = () => resolve();
-      document.body.append(iframe);
+    registration.abort();
+    await context.registerTool({
+      name: "reused",
+      description: "Second",
+      execute: () => executed.push("second"),
     });
-    try {
-      await context.executeTool({ ...tool, window: iframe.contentWindow! }, {});
-      return "resolved";
-    } catch (error) {
-      if (!(error instanceof Error)) {
-        throw error;
-      }
-      return error.name;
-    }
+
+    const staleExecution = await context.executeTool(staleTool!, {}).then(
+      () => "resolved",
+      (error: Error) => error.name,
+    );
+    const executedBefore = [...executed];
+    const [freshTool] = await context.getTools();
+    await context.executeTool(freshTool!, {});
+    return {
+      staleDescription: staleTool!.description,
+      staleExecution,
+      executedBefore,
+      executed,
+    };
   });
 
-  expect(outcome).toBe("NotFoundError");
+  expect(outcome).toEqual({
+    staleDescription: "First",
+    staleExecution: "NotFoundError",
+    executedBefore: [],
+    executed: ["second"],
+  });
 });
 
-test("descriptor origins are parsed, and a mismatch fails like a missing tool", async ({
-  page,
-}) => {
+test("Tools registered by an opaque-origin document cannot be executed", async ({ page }) => {
+  await page.goto("/opaque");
   const outcome = await page.evaluate(async () => {
     const context = document.modelContext!;
-
-    await context.registerTool({ name: "x", description: "X", execute: () => null });
-
-    const tool = (await context.getTools())[0]!;
-    const results: [string, string][] = [];
-    for (const [label, origin] of [
-      ["unparseable", "not a url"],
-      ["opaque", "data:,x"],
-      ["another origin", "https://other.test"],
-    ] as const) {
-      try {
-        await context.executeTool({ ...tool, origin }, {});
-        results.push([label, "resolved"]);
-      } catch (error) {
-        if (!(error instanceof Error)) {
-          throw error;
-        }
-        results.push([label, error.name]);
-      }
-    }
-
-    return results;
+    await context.registerTool({ name: "opaque", description: "Opaque", execute: () => null });
+    const [tool] = await context.getTools();
+    return {
+      origin: tool!.origin,
+      execution: await context.executeTool(tool!, {}).then(
+        () => "resolved",
+        (error: Error) => error.name,
+      ),
+    };
   });
 
-  expect(outcome).toEqual([
-    ["unparseable", "NotSupportedError"],
-    ["opaque", "NotSupportedError"],
-    ["another origin", "NotFoundError"],
-  ]);
+  expect(outcome).toEqual({ origin: "null", execution: "NotSupportedError" });
 });
 
 test("execution rejects a signal option that is not an AbortSignal", async ({ page }) => {

@@ -1,8 +1,10 @@
 import type { WebMCP } from "webmcp-types";
+import type { ToolSnapshot } from "./tool.js";
 
 /** Tool metadata as its owner stores it and as frames exchange it. */
-export interface ToolMetadata
-  extends Pick<WebMCP.RegisteredTool, "name" | "title" | "description"> {
+export interface ToolMetadata extends Pick<WebMCP.Tool, "name" | "title" | "description"> {
+  // The registration's tool id; registering again under the same name creates a new one.
+  id: string;
   annotations: WebMCP.ToolAnnotations | undefined;
   // Snapshots at registration; each discovery result parses a fresh copy.
   serializedSchema: string | undefined;
@@ -21,7 +23,7 @@ interface Handlers {
   getTools(callerOrigin: string): ToolMetadata[];
   execute(
     callerOrigin: string,
-    name: string,
+    toolId: string,
     serializedInput: string,
     signal: AbortSignal,
   ): Promise<string>;
@@ -31,10 +33,15 @@ interface Handlers {
 type Request =
   | { kind: "permission"; childIndex: number; childOrigin: string }
   | { kind: "getTools" }
-  | { kind: "execute"; name: string; input: string }
+  | { kind: "execute"; documentId: string; toolId: string; input: string }
   | { kind: "changed" };
 
-type ReplyValue = boolean | ToolMetadata[] | string | undefined;
+interface ToolList {
+  documentId: string;
+  tools: ToolMetadata[];
+}
+
+type ReplyValue = boolean | ToolList | string | undefined;
 
 interface Session {
   peer: Window;
@@ -47,6 +54,8 @@ const deadline = 500;
 const NativeDOMException = globalThis.DOMException;
 
 export class FrameBridge {
+  // Tools record it; a window that now holds another document answers with a different one.
+  readonly documentId = crypto.randomUUID();
   readonly #document: Document;
   readonly #window: Window;
   readonly #handlers: Handlers;
@@ -100,25 +109,21 @@ export class FrameBridge {
     return this.#documentAllowed(this.#document);
   }
 
-  async getTools(fromOrigins: string[]): Promise<WebMCP.RegisteredTool[]> {
+  async getTools(fromOrigins: string[]): Promise<ToolSnapshot[]> {
     await this.#started.promise;
     const ownOrigin = this.#window.origin;
     const origins = [ownOrigin, ...fromOrigins];
     const results = await Promise.all(
       this.#participants().map(async (peer) => {
         if (peer === this.#window) {
-          return this.#handlers
-            .getTools(ownOrigin)
-            .map((metadata) => toRegisteredTool(metadata, this.#window, ownOrigin));
+          const ownList = { documentId: this.documentId, tools: this.#handlers.getTools(ownOrigin) };
+          return toToolSnapshots(ownList, this.#window, this.#document, ownOrigin);
         }
         try {
           const reply = await this.#request(peer, origins, { kind: "getTools" });
-          if (!Array.isArray(reply.value)) {
-            throw new TypeError("Expected a tool list from the frame");
-          }
-          return reply.value.map((value: unknown) =>
-            toRegisteredTool(readToolMetadata(value), peer, reply.origin),
-          );
+          const toolList = readToolList(reply.value);
+          const peerDocument = readDocument(peer, reply.origin === ownOrigin);
+          return toToolSnapshots(toolList, peer, peerDocument, reply.origin);
         } catch (error) {
           // Refusals and missing peers are expected; malformed replies and other errors are not.
           if (!isExecutionError(error)) {
@@ -134,14 +139,15 @@ export class FrameBridge {
   async execute(
     target: Window,
     expectedOrigin: string,
-    name: string,
+    documentId: string,
+    toolId: string,
     serializedInput: string,
     signal?: AbortSignal,
   ): Promise<string> {
     const reply = await this.#request(
       target,
       [expectedOrigin],
-      { kind: "execute", name, input: serializedInput },
+      { kind: "execute", documentId, toolId, input: serializedInput },
       signal,
     );
     if (typeof reply.value !== "string") {
@@ -211,7 +217,9 @@ export class FrameBridge {
           this.#forget(target);
         }
         // A window that misses the deadline is treated as holding no polyfill, and so no tools.
-        fail(executionError("NotFoundError"));
+        // An execution only times out before the handshake, and its Tool came from a document
+        // that answered getTools(), so that document is no longer the window's active one.
+        fail(executionError(request.kind === "execute" ? "InvalidStateError" : "NotFoundError"));
       };
       const connected = (event: MessageEvent<unknown>): void => {
         if (event.source !== target) {
@@ -219,7 +227,9 @@ export class FrameBridge {
         }
         this.#handshakes.delete(id);
         if (origins && !origins.includes(event.origin)) {
-          fail(executionError("NotFoundError"));
+          // A Tool's origin is its registering document's, so for an execution a different origin
+          // means that document is gone. Elsewhere, the tools are not exposed to this caller.
+          fail(executionError(request.kind === "execute" ? "InvalidStateError" : "NotFoundError"));
           return;
         }
         peerOrigin = event.origin;
@@ -400,14 +410,19 @@ export class FrameBridge {
     }
     signal.throwIfAborted();
     if (request.kind === "getTools") {
-      return this.#handlers.getTools(origin);
+      return { documentId: this.documentId, tools: this.#handlers.getTools(origin) };
     }
     if (
       request.kind === "execute" &&
-      typeof request.name === "string" &&
+      typeof request.documentId === "string" &&
+      typeof request.toolId === "string" &&
       typeof request.input === "string"
     ) {
-      return this.#handlers.execute(origin, request.name, request.input, signal);
+      // The window now holds a document other than the one that registered the tool.
+      if (request.documentId !== this.documentId) {
+        throw executionError("InvalidStateError");
+      }
+      return this.#handlers.execute(origin, request.toolId, request.input, signal);
     }
     if (request.kind === "changed") {
       await this.#handlers.changed();
@@ -700,40 +715,50 @@ export function readToolsPolicy(owner: Document): boolean | undefined {
     : undefined;
 }
 
-function toRegisteredTool(
-  metadata: ToolMetadata,
-  owner: Window,
+function toToolSnapshots(
+  toolList: ToolList,
+  source: Window,
+  sourceDocument: Document | undefined,
   origin: string,
-): WebMCP.RegisteredTool {
-  const inputSchema = parseStoredSchema(metadata.serializedSchema);
-  const outputSchema = parseStoredSchema(metadata.serializedOutputSchema);
-
-  // Insert present members in Web IDL order.
-  return {
-    ...(metadata.annotations !== undefined && { annotations: { ...metadata.annotations } }),
-    description: metadata.description,
-    ...(inputSchema !== undefined && { inputSchema }),
+): ToolSnapshot[] {
+  return toolList.tools.map((metadata) => ({
+    id: metadata.id,
+    documentId: toolList.documentId,
     name: metadata.name,
-    origin,
-    ...(outputSchema !== undefined && { outputSchema }),
     title: metadata.title,
-    window: owner,
-  };
+    description: metadata.description,
+    inputSchema: parseStoredSchema(metadata.serializedSchema),
+    outputSchema: parseStoredSchema(metadata.serializedOutputSchema),
+    // Each Tool gets its own annotations object.
+    annotations: metadata.annotations === undefined ? null : { ...metadata.annotations },
+    origin,
+    source,
+    sourceDocument,
+  }));
 }
 
-function parseStoredSchema(serialized: string | undefined): object | undefined {
+function parseStoredSchema(serialized: string | undefined): object | null {
   if (serialized === undefined) {
-    return undefined;
+    return null;
   }
   // SAFETY: the draft keeps whatever JSON toJSON produced; the cast matches the schema's object type.
   return JSON.parse(serialized) as object;
 }
 
 // Another frame's reply is untrusted input.
+function readToolList(value: unknown): ToolList {
+  const reply = record(value);
+  if (!reply || typeof reply.documentId !== "string" || !Array.isArray(reply.tools)) {
+    throw new TypeError("Expected a tool list from the frame");
+  }
+  return { documentId: reply.documentId, tools: reply.tools.map(readToolMetadata) };
+}
+
 function readToolMetadata(value: unknown): ToolMetadata {
   const tool = record(value);
   if (
     !tool ||
+    typeof tool.id !== "string" ||
     typeof tool.name !== "string" ||
     typeof tool.title !== "string" ||
     typeof tool.description !== "string"
@@ -741,6 +766,7 @@ function readToolMetadata(value: unknown): ToolMetadata {
     throw new TypeError("Invalid tool metadata from the frame");
   }
   const metadata: ToolMetadata = {
+    id: tool.id,
     name: tool.name,
     title: tool.title,
     description: tool.description,

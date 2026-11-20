@@ -28,7 +28,7 @@ Polyfill tests disable native WebMCP. A separate Chromium test uses
 context and its tools.
 
 WPT needs Python 3.11+ and a clean checkout at
-[`fe52996`](https://github.com/web-platform-tests/wpt/commit/fe52996d4465f23617bce91927bdd58e6ce8f541).
+[`536ae94`](https://github.com/web-platform-tests/wpt/commit/536ae943008db6f9a5aeb05c8f174dc6d3e763fa).
 The [CI workflow](.github/workflows/test.yml) has the sparse-checkout and dependency setup.
 
 ```sh
@@ -53,27 +53,35 @@ other non-testharness files are outside this suite.
 
 Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
 `outputSchema` follows [webmcp#254](https://github.com/webmachinelearning/webmcp/pull/254)
-(draft `6cd745a`) and lifecycle event timing follows
-[webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371) (draft `f2f2ae2`);
-the other draft changes since `eada13b` are not yet reviewed.
+(draft `6cd745a`), lifecycle event timing follows
+[webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371) (draft `f2f2ae2`), and
+the `Tool` interface follows [webmcp#348](https://github.com/webmachinelearning/webmcp/pull/348)
+(draft `14b6d53`); the other draft changes since `eada13b` are not yet reviewed.
 
-- **Missing APIs:** declarative forms and CSS states are not implemented.
+- **Missing APIs:** declarative forms and CSS states are not implemented. The pinned WPT
+  also covers `waitForToolsUntil()` and `resumeTool()`, which are not in the draft; those
+  subtests are expected failures.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Lifecycle events:** script-dispatched events cannot be
   [trusted](https://dom.spec.whatwg.org/#dom-event-istrusted), so `isTrusted` is false.
-- **outputSchema:** `registerTool()` accepts an optional `outputSchema`, and `getTools()`
-  returns a deep copy on `RegisteredTool`, converted and snapshotted like `inputSchema`.
-  This follows
-  [draft `6cd745a`](https://github.com/webmachinelearning/webmcp/blob/6cd745ac8a186122bd3f4aeaeb1d6cfa820251d2/index.bs).
-  An omitted schema is absent (`undefined`). WPT
-  [`9bde5b3`](https://github.com/web-platform-tests/wpt/commit/9bde5b3372c351a82884e2cc06b1a9e7e3c26185)
-  expects `null`, which matches Chromium's nullable `Tool.outputSchema` attribute, not the
-  draft dictionary.
+- **Tool:** `getTools()` returns `Tool` objects, and `executeTool()` rejects anything
+  else with `TypeError`. A `Tool` targets one registration by an id hidden from script,
+  so it never runs a tool registered later under the same name. Absent `inputSchema`,
+  `outputSchema`, and `annotations` are `null`. Each realm loads its own polyfill, so a
+  `Tool` from another realm is read through a getter under the registered symbol
+  `webmcp-polyfill.tool-state`, which appears on `Tool.prototype`. A cross-origin
+  document cannot be read, so `source` stays non-null after it navigates until its
+  window closes; executing such a `Tool` still rejects with `InvalidStateError` when the
+  new document answers. Firefox throws "Permission denied to access object" for a
+  `WeakRef` to a cross-origin `WindowProxy`, so there the source is held strongly.
+- **Opaque origins:** the draft rejects executing a tool registered by an opaque-origin
+  document with `NotSupportedError` ([webmcp#349](https://github.com/webmachinelearning/webmcp/issues/349)).
+  WPT [`3dad33b`](https://github.com/web-platform-tests/wpt/commit/3dad33b2b3ab95240876eb2f83bd57b320da035e) follows
+  Chromium, which executes it; that subtest is an expected failure.
 - **Execution errors:** failures reject with the draft's `NotFoundError`, `DataError`,
   `OperationError`, `AbortError`, or `InvalidStateError`, with Chromium's messages.
-  Six pinned subtests still expect `UnknownError` and are expected failures; upstream WPT
-  updated or removed them by `22b4a4d`. Failures of the polyfill's own frame messages,
+  Failures of the polyfill's own frame messages,
   such as a malformed reply, have no draft counterpart and reject with `OperationError`.
 - **Timing:** MessagePorts approximate native task ordering. Aborting before
   dispatch skips the callback; the draft dispatches and then aborts its signal.
@@ -85,7 +93,8 @@ the other draft changes since `eada13b` are not yet reviewed.
   unsupported; closed shadow trees limit discovery and ordering.
 - **Deadlines:** initial discovery, handshakes, and discovery or permission replies
   wait up to 500 ms. Late peers can be absent from results, and executing a tool in a
-  frame that misses the handshake deadline rejects with `NotFoundError`. Callbacks and
+  frame that misses the handshake deadline rejects with `InvalidStateError`, as the
+  document that registered it is treated as gone. Callbacks and
   `toolchange` listeners have no deadline, so an unresponsive peer can leave a call
   pending. Navigation cleanup depends on `pagehide`; removed frames are polled
   every 100 ms. Background suspension affects timing.

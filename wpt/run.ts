@@ -114,11 +114,11 @@ const subtests = results.flatMap((fileResult) => fileResult.subtests);
 const uniqueFiles = new Set(results.map((fileResult) => fileResult.test));
 
 // These counts belong to the pinned revision; an incomplete run must not pass.
-assert.equal(results.length, 70, "Expected all 70 WebMCP testharness files at the pin");
+assert.equal(results.length, 80, "Expected all 80 WebMCP testharness files at the pin");
 assert.equal(uniqueFiles.size, results.length, "WPT repeated a test file");
 assert.equal(
   subtests.length,
-  190,
+  243,
   "WPT subtest count changed; inspect the report and expectations",
 );
 const statusCounts = { PASS: 0, FAIL: 0, TIMEOUT: 0, NOTRUN: 0, PRECONDITION_FAILED: 0 };
