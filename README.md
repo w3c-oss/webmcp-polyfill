@@ -20,7 +20,7 @@ Load the polyfill before you register tools. To avoid downloading it in browsers
 with native WebMCP support, import it conditionally:
 
 ```ts
-if (!("modelContext" in document)) {
+if (isSecureContext && !("modelContext" in document)) {
   await import("@w3c/webmcp-polyfill/auto");
 }
 
