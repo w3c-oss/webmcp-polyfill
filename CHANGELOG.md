@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/w3c-oss/webmcp-polyfill/compare/v0.1.1...v0.2.0) (2026-11-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace RegisteredTool dictionaries with the Tool interface
+
+### Features
+
+* replace RegisteredTool dictionaries with the Tool interface ([63ddbfd](https://github.com/w3c-oss/webmcp-polyfill/commit/63ddbfd5b51ff42464969efb112386c0eb142728))
+
 ## [0.1.1](https://github.com/w3c-oss/webmcp-polyfill/compare/v0.1.0...v0.1.1) (2026-11-16)
 
 
