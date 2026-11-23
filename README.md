@@ -16,7 +16,8 @@ npm install @w3c/webmcp-polyfill
 
 The API only exists in secure contexts, so serve your page over HTTPS or from localhost.
 
-Conditionally load the polyfill before you register tools:
+Load the polyfill before you register tools. To avoid downloading it in browsers
+with native WebMCP support, import it conditionally:
 
 ```ts
 if (!("modelContext" in document)) {
