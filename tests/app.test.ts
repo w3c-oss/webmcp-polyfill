@@ -33,8 +33,11 @@ test("a served application executes, rejects invalid input, unregisters, and res
 
   await page.getByRole("button", { name: "Register", exact: true }).click();
   await expect(page.locator("#status")).toHaveText("registered");
-  const registered = await page.evaluate(() => document.modelContext!.getTools());
-  expect(registered.map((tool) => tool.name)).toEqual(["increment"]);
+  // Tool attributes are prototype accessors, so read the names before leaving the page.
+  const registered = await page.evaluate(async () =>
+    (await document.modelContext!.getTools()).map((tool) => tool.name),
+  );
+  expect(registered).toEqual(["increment"]);
 
   await page.getByRole("button", { name: "Unregister", exact: true }).click();
   await expect(page.locator("#status")).toHaveText("unregistered");

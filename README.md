@@ -80,7 +80,7 @@ The package needs no `"use client"` directive. Use it on your [Client Components
 
 ## Frames
 
-Load the polyfill in each frame. Same-origin tools are visible by default, including those in parents and siblings. Pass the discovered descriptor to `executeTool()` so names shared by different frames reach the correct owner.
+Load the polyfill in each frame. Same-origin tools are visible by default, including those in parents and siblings. `getTools()` returns [`Tool`](https://webmachinelearning.github.io/webmcp/#tool-interface) objects; pass one to `executeTool()` so names shared by different frames reach the correct owner. Each `Tool` refers to one registration: once that tool is unregistered, or its document navigates away, executing the `Tool` rejects, even if a new tool has the same name.
 
 For cross-origin tools, delegate the `tools` permission on the iframe, register the tool with `exposedTo: [callerOrigin]`, and discover it with `getTools({ fromOrigins: [toolOrigin] })`. Same-origin tools are still included in that result.
 
@@ -92,7 +92,7 @@ Initial discovery waits up to 500 ms for existing frames. Requests use `MessageC
 
 ## Implementation status
 
-The polyfill targets `webmcp-types@0.1.10` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
+The polyfill targets `webmcp-types@0.2.0` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
 
 Native contexts do not join the polyfill's channels. [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) lists the known differences from the draft, the test commands, and the spec and WPT revisions we test against.
 

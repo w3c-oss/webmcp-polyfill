@@ -36,8 +36,12 @@ function discover(frame: Frame): Promise<string[]> {
   );
 }
 
-function sendToolRequests(settings: { origin: string; name: string }): Promise<unknown[]> {
-  const requests = [{ kind: "getTools" }, { kind: "execute", name: settings.name, input: "{}" }];
+function sendToolRequests(settings: { origin: string }): Promise<unknown[]> {
+  // A raw caller cannot know the ids, but the permission check comes before any lookup.
+  const requests = [
+    { kind: "getTools" },
+    { kind: "execute", documentId: "guess", toolId: "guess", input: "{}" },
+  ];
   return Promise.all(
     requests.map(async (request) => {
       const channel = new MessageChannel();
@@ -90,7 +94,7 @@ test("discovers the full same-origin frame tree without merging duplicate names"
     return Promise.all(
       tools.map(async (tool) => ({
         name: tool.name,
-        owner: tool.window.name || "top",
+        owner: tool.source!.name || "top",
         result: await context.executeTool(tool, {}),
       })),
     );
@@ -139,11 +143,19 @@ test("cross-origin discovery requires exposure and an explicit origin filter", a
     const defaults = await context.getTools();
     const filtered = await context.getTools({ fromOrigins: [origin] });
     const remote = filtered.find((tool) => tool.name === "public")!;
+    // A plain object with every attribute of a Tool is still not a Tool.
+    const copy: WebMCP.Tool = {
+      name: remote.name,
+      title: remote.title,
+      description: remote.description,
+      inputSchema: remote.inputSchema,
+      outputSchema: remote.outputSchema,
+      source: remote.source,
+      origin: remote.origin,
+      annotations: remote.annotations,
+    };
     const rejected = [];
-    for (const forged of [
-      { ...remote, name: "private" },
-      { ...remote, origin: location.origin },
-    ]) {
+    for (const forged of [copy, { ...copy, name: "private" }, { ...remote, name: "private" }]) {
       rejected.push(
         await context.executeTool(forged, {}).then(
           () => "resolved",
@@ -154,7 +166,7 @@ test("cross-origin discovery requires exposure and an explicit origin filter", a
     return {
       defaults: defaults.map((tool) => tool.name),
       filtered: filtered.map((tool) => tool.name),
-      ownerWindow: remote.window === frames[0],
+      ownerWindow: remote.source === frames[0],
       remoteResult: await context.executeTool(remote, {}),
       rejected,
     };
@@ -165,7 +177,7 @@ test("cross-origin discovery requires exposure and an explicit origin filter", a
     filtered: ["local", "public"],
     ownerWindow: true,
     remoteResult: '"public"',
-    rejected: ["NotFoundError", "NotFoundError"],
+    rejected: ["TypeError", "TypeError", "TypeError"],
   });
   await expect(owner.locator("body")).toHaveAttribute("data-private-executions", "0");
 });
@@ -178,13 +190,6 @@ test("cross-origin frames require tools delegation before using the API", async 
       [
         context.registerTool({ name: "denied", description: "Denied", execute: () => null }),
         context.getTools(),
-        context.executeTool({
-          name: "denied",
-          title: "",
-          description: "Denied",
-          window,
-          origin: location.origin,
-        }),
       ].map((pending) =>
         pending.then(
           () => "resolved",
@@ -194,7 +199,35 @@ test("cross-origin frames require tools delegation before using the API", async 
     );
   });
 
-  expect(result).toEqual(["NotAllowedError", "NotAllowedError", "NotAllowedError"]);
+  expect(result).toEqual(["NotAllowedError", "NotAllowedError"]);
+});
+
+test("a frame without tools permission cannot execute a Tool from its parent", async ({
+  page,
+}) => {
+  await addFrame(page.mainFrame(), "denied", { allow: "tools 'none'" });
+  const outcome = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    document.body.dataset.executions = "0";
+    await context.registerTool({
+      name: "parent",
+      description: "Parent",
+      execute() {
+        document.body.dataset.executions = "1";
+        return "parent";
+      },
+    });
+    const [tool] = await context.getTools();
+    // A Tool from another realm converts, so the caller's permission is what rejects.
+    const deniedContext = frames[0]!.document.modelContext!;
+    return deniedContext.executeTool(tool!).then(
+      () => "resolved",
+      (error: Error) => error.name,
+    );
+  });
+
+  expect(outcome).toBe("NotAllowedError");
+  await expect(page.locator("body")).toHaveAttribute("data-executions", "0");
 });
 
 test("raw messages cannot bypass a caller frame's tools policy", async ({ page }) => {
@@ -214,7 +247,7 @@ test("raw messages cannot bypass a caller frame's tools policy", async ({ page }
     );
   }, remoteOrigin);
 
-  const replies = await denied.evaluate(sendToolRequests, { origin: localOrigin, name: "exposed" });
+  const replies = await denied.evaluate(sendToolRequests, { origin: localOrigin });
 
   expect(replies).toEqual([
     { kind: "error", name: "NotAllowedError" },
@@ -318,7 +351,7 @@ test("an intermediate frame cannot forge permissions denied by an ancestor", asy
     );
   });
   expect(failures).toEqual(["NotAllowedError", "NotAllowedError"]);
-  expect(await child.evaluate(sendToolRequests, { origin: localOrigin, name: "exposed" })).toEqual([
+  expect(await child.evaluate(sendToolRequests, { origin: localOrigin })).toEqual([
     { kind: "error", name: "NotAllowedError" },
     { kind: "error", name: "NotAllowedError" },
   ]);
@@ -348,7 +381,7 @@ test("routes between cross-origin siblings and through nested frames", async ({ 
     const tool = (await context.getTools({ fromOrigins: [origin] }))[0]!;
     return {
       name: tool.name,
-      ownerWindow: tool.window === top!.frames[0]!.frames[0],
+      ownerWindow: tool.source === top!.frames[0]!.frames[0],
       result: await context.executeTool(tool, {}),
     };
   }, localOrigin);
@@ -884,7 +917,7 @@ for (const [removal, expected] of [
   });
 }
 
-test("excludes another frame tree even when a same-origin window supplies its descriptor", async ({
+test("excludes another frame tree even when a same-origin window supplies its Tool", async ({
   page,
 }) => {
   const opened = page.waitForEvent("popup");
@@ -944,28 +977,109 @@ test("frames without the polyfill delay neither registration nor discovery", asy
   expect(timings.discovery).toBeLessThan(250);
 });
 
-test("executing in a frame without the polyfill rejects with NotFoundError", async ({ page }) => {
-  await addFrame(page.mainFrame(), "silent", { path: "/" });
-
-  const outcome = await page.evaluate(() =>
-    document
-      .modelContext!.executeTool(
+for (const [label, origin] of [
+  ["same-origin", localOrigin],
+  ["cross-origin", remoteOrigin],
+] as const) {
+  test(`a Tool from a ${label} document that navigated away does not run its successor's tool`, async ({
+    page,
+  }) => {
+    const owner = await addFrame(page.mainFrame(), "owner", { origin });
+    const register = async (callerOrigin: string): Promise<void> => {
+      document.body.dataset.executions = "0";
+      await document.modelContext!.registerTool(
         {
-          name: "absent",
-          title: "",
-          description: "Absent",
-          origin: location.origin,
-          window: frames[0]!,
+          name: "reused",
+          description: "Registered again by each document",
+          execute() {
+            document.body.dataset.executions = "1";
+            return "reused";
+          },
         },
-        {},
-      )
-      .then(
+        { exposedTo: [callerOrigin] },
+      );
+    };
+    await owner.evaluate(register, localOrigin);
+    const staleTool = await page.evaluateHandle(async (ownerOrigin) => {
+      const tools = await document.modelContext!.getTools({ fromOrigins: [ownerOrigin] });
+      return tools.find((tool) => tool.name === "reused")!;
+    }, origin);
+
+    await owner.goto(`${origin}/frame?name=owner`);
+    await owner.evaluate(register, localOrigin);
+    const outcome = await page.evaluate(
+      async (tool) => ({
+        source: tool.source === null ? "null" : "window",
+        execution: await document.modelContext!.executeTool(tool, {}).then(
+          () => "resolved",
+          (error: Error) => error.name,
+        ),
+      }),
+      staleTool,
+    );
+
+    expect(outcome.execution).toBe("InvalidStateError");
+    // A cross-origin document cannot be read, so only a same-origin source is known to be gone.
+    if (origin === localOrigin) {
+      expect(outcome.source).toBe("null");
+    }
+    await expect(owner.locator("body")).toHaveAttribute("data-executions", "0");
+  });
+}
+
+test("executing in a frame that no longer runs the polyfill rejects with InvalidStateError", async ({
+  page,
+}) => {
+  const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
+  await owner.evaluate(async (callerOrigin) => {
+    await document.modelContext!.registerTool(
+      { name: "absent", description: "Absent", execute: () => null },
+      { exposedTo: [callerOrigin] },
+    );
+  }, localOrigin);
+  const tool = await page.evaluateHandle(
+    async (ownerOrigin) =>
+      (await document.modelContext!.getTools({ fromOrigins: [ownerOrigin] })).find(
+        (candidate) => candidate.name === "absent",
+      )!,
+    remoteOrigin,
+  );
+
+  // The new cross-origin document never answers, so the call misses the handshake deadline.
+  // The document that registered the tool answered getTools(), so it is the one that is gone.
+  await owner.goto(`${remoteOrigin}/?name=owner`);
+  const outcome = await page.evaluate(
+    (staleTool) =>
+      document.modelContext!.executeTool(staleTool, {}).then(
         () => "resolved",
         (error: Error) => error.name,
       ),
+    tool,
   );
 
-  expect(outcome).toBe("NotFoundError");
+  expect(outcome).toBe("InvalidStateError");
+});
+
+test("a Tool created in another same-origin realm can be executed", async ({ page }) => {
+  await addFrame(page.mainFrame(), "child");
+  const outcome = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    await context.registerTool({ name: "top", description: "Top", execute: () => "top" });
+    const child = frames[0]!;
+    const [childTool] = await child.document.modelContext!.getTools();
+    // The child's prototype, but no Tool behind it.
+    const unbranded: WebMCP.Tool = Object.create(Reflect.get(child, "Tool").prototype);
+    return {
+      foreign: Object.getPrototypeOf(childTool) !== Reflect.get(window, "Tool").prototype,
+      result: await context.executeTool(childTool!, {}),
+      unbranded: await context.executeTool(unbranded, {}).then(
+        () => "resolved",
+        (error: Error) => error.name,
+      ),
+    };
+  });
+
+  expect(outcome).toEqual({ foreign: true, result: '"top"', unbranded: "TypeError" });
 });
 
 test("a frame that registers at startup notifies and discovers its parent", async ({
@@ -1103,7 +1217,7 @@ test("a same-origin frame in a closed shadow root registers and meets a later si
   await expect.poll(() => discover(shadow)).toEqual(["shadow", "sibling"]);
 });
 
-test("cross-origin discovery preserves tool metadata and its owner window", async ({ page }) => {
+test("cross-origin discovery preserves tool metadata and its source window", async ({ page }) => {
   const owner = await addFrame(page.mainFrame(), "owner", { origin: remoteOrigin });
   await owner.evaluate(async (origin) => {
     const descriptor: WebMCP.ModelContextTool = {
@@ -1128,7 +1242,7 @@ test("cross-origin discovery preserves tool metadata and its owner window", asyn
       outputSchema: tool.outputSchema,
       annotations: tool.annotations,
       origin: tool.origin,
-      ownerWindow: tool.window === frames[0],
+      ownerWindow: tool.source === frames[0],
     };
   }, remoteOrigin);
 
@@ -1289,44 +1403,69 @@ test("a peer that accepts a connection and never answers discovery cannot stall 
   expect(warnings).toEqual([]);
 });
 
+// Answers the polyfill's protocol from a frame that does not load it. Discovery requests get the
+// replies in order. Once they run out, a connection gets an error before its ready message if
+// `overtake` is set; other requests are answered with 42.
+async function actAsPeer(settings: { replies: unknown[]; overtake: boolean }): Promise<void> {
+  let discovery = 0;
+  const learned = Promise.withResolvers<void>();
+  window.addEventListener("message", (event: MessageEvent<unknown>) => {
+    const requester = event.source;
+    if (!requester || !("window" in requester) || typeof event.data !== "string") {
+      return;
+    }
+    if (event.data === "webmcp-polyfill:announce") {
+      requester.postMessage("webmcp-polyfill:present", event.origin);
+      return;
+    }
+    if (event.data === "webmcp-polyfill:present") {
+      learned.resolve();
+      return;
+    }
+    if (!event.data.startsWith("webmcp-polyfill:connect:")) {
+      return;
+    }
+    const id = event.data.slice("webmcp-polyfill:connect:".length);
+    const port = event.ports[0]!;
+    const sendReady = (): void => requester.postMessage(`webmcp-polyfill:ready:${id}`, event.origin);
+    if (settings.overtake && discovery === settings.replies.length) {
+      port.postMessage({ kind: "error" });
+      setTimeout(sendReady, 100);
+      return;
+    }
+    port.onmessage = (message) => {
+      const value = message.data.kind === "getTools" ? settings.replies[discovery++] : 42;
+      port.postMessage({ kind: "result", value });
+    };
+    sendReady();
+  });
+  parent.postMessage("webmcp-polyfill:announce", "*");
+  await learned.promise;
+}
+
+const peerToolList = {
+  documentId: "peer",
+  tools: [{ id: "peer-tool", name: "fake", title: "", description: "Fake" }],
+};
+
 test("a peer's malformed discovery replies are discarded and reported", async ({ page }) => {
   const hostile = await addFrame(page.mainFrame(), "hostile", { path: "/" });
-  const replyCount = await hostile.evaluate(async () => {
-    const tool = { name: "fake", title: "", description: "Fake" };
-    const replies: unknown[] = [
-      null,
-      [{ name: "fake" }],
-      [{ ...tool, annotations: 42 }],
-      [{ ...tool, annotations: { readOnlyHint: "yes" } }],
-      [{ ...tool, serializedSchema: "{" }],
-      [{ ...tool, serializedOutputSchema: 1 }],
-      [{ ...tool, serializedOutputSchema: "{" }],
-    ];
-    let discovery = 0;
-    const learned = Promise.withResolvers<void>();
-    window.addEventListener("message", (event: MessageEvent<unknown>) => {
-      const requester = event.source;
-      if (!requester || !("window" in requester) || typeof event.data !== "string") {
-        return;
-      }
-      if (event.data === "webmcp-polyfill:announce") {
-        requester.postMessage("webmcp-polyfill:present", event.origin);
-      } else if (event.data === "webmcp-polyfill:present") {
-        learned.resolve();
-      } else if (event.data.startsWith("webmcp-polyfill:connect:")) {
-        const id = event.data.slice("webmcp-polyfill:connect:".length);
-        const port = event.ports[0]!;
-        port.onmessage = (message) => {
-          const value = message.data.kind === "getTools" ? replies[discovery++] : 42;
-          port.postMessage({ kind: "result", value });
-        };
-        requester.postMessage(`webmcp-polyfill:ready:${id}`, event.origin);
-      }
-    });
-    parent.postMessage("webmcp-polyfill:announce", "*");
-    await learned.promise;
-    return replies.length;
-  });
+  const valid = peerToolList.tools[0]!;
+  const list = (tools: unknown[]) => ({ documentId: "peer", tools });
+  const malformed: unknown[] = [
+    null,
+    [valid],
+    { tools: [valid] },
+    list([{ ...valid, id: undefined }]),
+    list([{ name: "fake" }]),
+    list([{ ...valid, annotations: 42 }]),
+    list([{ ...valid, annotations: { readOnlyHint: "yes" } }]),
+    list([{ ...valid, serializedSchema: "{" }]),
+    list([{ ...valid, serializedOutputSchema: 1 }]),
+    list([{ ...valid, serializedOutputSchema: "{" }]),
+  ];
+  // The last, valid reply supplies a Tool whose execution gets a malformed result.
+  await hostile.evaluate(actAsPeer, { replies: [...malformed, peerToolList], overtake: false });
 
   const warnings: string[] = [];
   page.on("console", (message) => {
@@ -1341,13 +1480,7 @@ test("a peer's malformed discovery replies are discarded and reported", async ({
     for (let index = 0; index < count; index++) {
       discoveries.push((await context.getTools()).map((tool) => tool.name));
     }
-    const fake = {
-      name: "fake",
-      title: "",
-      description: "Fake",
-      origin: location.origin,
-      window: frames[0]!,
-    };
+    const fake = (await context.getTools()).find((tool) => tool.name === "fake")!;
     return {
       discoveries,
       execution: await context.executeTool(fake, {}).then(
@@ -1355,14 +1488,14 @@ test("a peer's malformed discovery replies are discarded and reported", async ({
         (error: Error) => error.name,
       ),
     };
-  }, replyCount);
+  }, malformed.length);
 
   expect(outcome).toEqual({
-    discoveries: Array.from({ length: replyCount }, () => ["top"]),
+    discoveries: Array.from({ length: malformed.length }, () => ["top"]),
     execution: "OperationError",
   });
   expect(warnings).toEqual(
-    Array.from({ length: replyCount }, () =>
+    Array.from({ length: malformed.length }, () =>
       expect.stringContaining("WebMCP: could not read tools from a frame."),
     ),
   );
@@ -1387,40 +1520,16 @@ test("a connection that never sends its request is answered with an error", asyn
 
 test("an error that overtakes the ready message rejects the call", async ({ page }) => {
   const peer = await addFrame(page.mainFrame(), "peer", { path: "/" });
-  await peer.evaluate(() => {
-    window.addEventListener("message", (event: MessageEvent<unknown>) => {
-      const requester = event.source;
-      if (
-        !requester ||
-        !("window" in requester) ||
-        typeof event.data !== "string" ||
-        !event.data.startsWith("webmcp-polyfill:connect:")
-      ) {
-        return;
-      }
-      const id = event.data.slice("webmcp-polyfill:connect:".length);
-      event.ports[0]?.postMessage({ kind: "error" });
-      setTimeout(() => requester.postMessage(`webmcp-polyfill:ready:${id}`, event.origin), 100);
-    });
-  });
+  await peer.evaluate(actAsPeer, { replies: [peerToolList], overtake: true });
 
-  const outcome = await page.evaluate(() =>
-    document
-      .modelContext!.executeTool(
-        {
-          name: "gone",
-          title: "",
-          description: "Gone",
-          origin: location.origin,
-          window: frames[0]!,
-        },
-        {},
-      )
-      .then(
-        () => "resolved",
-        (error: Error) => error.name,
-      ),
-  );
+  const outcome = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    const [tool] = await context.getTools();
+    return context.executeTool(tool!, {}).then(
+      () => "resolved",
+      (error: Error) => error.name,
+    );
+  });
 
   expect(outcome).toBe("OperationError");
 });

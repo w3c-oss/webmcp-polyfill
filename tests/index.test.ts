@@ -476,7 +476,9 @@ test("installs once, exposes only standard members, and keeps document identity"
   expect(outcome).toEqual({ context: true, getter: true });
 });
 
-test("snapshots registration metadata and returns sorted, independent copies", async ({ page }) => {
+test("getTools() resolves with new, sorted Tool snapshots of registration metadata", async ({
+  page,
+}) => {
   await page.addScriptTag({ url: "/auto.js" });
   const result = await page.evaluate(async () => {
     const context = document.modelContext!;
@@ -504,22 +506,27 @@ test("snapshots registration metadata and returns sorted, independent copies", a
     const copied = again[1]!;
     return {
       names: tools.map((tool) => tool.name),
-      keys: tools.map((tool) => Object.keys(tool)),
+      own: tools.map((tool) => Object.keys(tool)),
+      fresh: copied !== first,
+      // Each attribute returns the same object every time, so a change made through it stays.
+      sameSchema: first.inputSchema === first.inputSchema,
+      keptMutation: Object.hasOwn(first.inputSchema!, "mutated"),
       firstSchema,
       nextSchema: JSON.stringify(copied.inputSchema),
       annotations: copied.annotations,
-      hasSchema: Object.hasOwn(empty, "inputSchema"),
-      hasOutputSchema: Object.hasOwn(empty, "outputSchema"),
-      hasAnnotations: Object.hasOwn(empty, "annotations"),
-      origin: empty.origin,
-      window: empty.window === window,
+      empty: {
+        title: empty.title,
+        inputSchema: empty.inputSchema,
+        outputSchema: empty.outputSchema,
+        annotations: empty.annotations,
+        origin: empty.origin,
+        source: empty.source === window,
+      },
     };
   });
   expect(result.names).toEqual(["a", "z"]);
-  expect(result.keys).toEqual([
-    ["description", "name", "origin", "title", "window"],
-    ["annotations", "description", "inputSchema", "name", "origin", "title", "window"],
-  ]);
+  expect(result.own).toEqual([[], []]);
+  expect(result).toMatchObject({ fresh: true, sameSchema: true, keptMutation: true });
   expect(result.firstSchema).toBe(result.nextSchema);
   expect(JSON.parse(result.nextSchema!)).toEqual({
     type: "object",
@@ -531,12 +538,103 @@ test("snapshots registration metadata and returns sorted, independent copies", a
     readOnlyHint: false,
     untrustedContentHint: false,
   });
-  expect(result).toMatchObject({
-    hasSchema: false,
-    hasOutputSchema: false,
-    hasAnnotations: false,
+  expect(result.empty).toEqual({
+    title: "",
+    inputSchema: null,
+    outputSchema: null,
+    annotations: null,
     origin: "http://localhost:8793",
-    window: true,
+    source: true,
+  });
+});
+
+test("Tool is a non-constructible interface with read-only attributes", async ({ page }) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const result = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    await context.registerTool({ name: "x", description: "X", execute: () => null });
+    const [tool] = await context.getTools();
+    const toolInterface = Reflect.get(window, "Tool");
+    if (typeof toolInterface !== "function") {
+      throw new Error("Tool interface object is missing");
+    }
+    const errorName = (action: () => unknown): string => {
+      try {
+        action();
+        return "none";
+      } catch (error) {
+        return error instanceof Error ? error.name : String(error);
+      }
+    };
+    const descriptors = Object.entries(Object.getOwnPropertyDescriptors(toolInterface.prototype));
+    const nameGetter = Object.getOwnPropertyDescriptor(toolInterface.prototype, "name")!.get!;
+    return {
+      construct: errorName(() => Reflect.construct(toolInterface, [])),
+      call: errorName(() => Reflect.apply(toolInterface, undefined, [])),
+      interfaceName: toolInterface.name,
+      instance: tool instanceof toolInterface,
+      brand: Object.prototype.toString.call(tool),
+      attributes: descriptors
+        .filter(([, descriptor]) => descriptor.get)
+        .map(([key, descriptor]) => [key, descriptor.enumerable, descriptor.set === undefined]),
+      assigned: Reflect.set(tool!, "name", "renamed"),
+      name: tool!.name,
+      receivers: [{}, Object.create(toolInterface.prototype)].map((receiver) =>
+        errorName(() => Reflect.apply(nameGetter, receiver, [])),
+      ),
+    };
+  });
+
+  expect(result).toEqual({
+    construct: "TypeError",
+    call: "TypeError",
+    interfaceName: "Tool",
+    instance: true,
+    brand: "[object Tool]",
+    attributes: [
+      ["name", true, true],
+      ["title", true, true],
+      ["description", true, true],
+      ["inputSchema", true, true],
+      ["outputSchema", true, true],
+      ["source", true, true],
+      ["origin", true, true],
+      ["annotations", true, true],
+    ],
+    assigned: false,
+    name: "x",
+    receivers: ["TypeError", "TypeError"],
+  });
+});
+
+test("script cannot change a Tool through the state its other realms read", async ({ page }) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const result = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    await context.registerTool({ name: "kept", description: "Kept", execute: () => "kept" });
+    const [tool] = await context.getTools();
+    const state: unknown = Reflect.get(tool!, Symbol.for("webmcp-polyfill.tool-state"));
+    if (typeof state !== "object" || state === null) {
+      throw new Error("The cross-realm state is missing");
+    }
+    const writes = ["id", "name", "origin", "source"].map((key) => Reflect.set(state, key, "x"));
+    return {
+      frozen: Object.isFrozen(state),
+      writes,
+      name: tool!.name,
+      origin: tool!.origin,
+      source: tool!.source === window,
+      result: await context.executeTool(tool!, {}),
+    };
+  });
+
+  expect(result).toEqual({
+    frozen: true,
+    writes: [false, false, false, false],
+    name: "kept",
+    origin: "http://localhost:8793",
+    source: true,
+    result: '"kept"',
   });
 });
 
@@ -607,7 +705,7 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
   expect(registered).toEqual(["valid"]);
 });
 
-test("snapshots outputSchema, omits it when absent, and does not validate results", async ({
+test("snapshots outputSchema, is null when absent, and does not validate results", async ({
   page,
 }) => {
   await page.addScriptTag({ url: "/auto.js" });
@@ -669,11 +767,8 @@ test("snapshots outputSchema, omits it when absent, and does not validate result
     const copied = again[2]!;
     return {
       names: tools.map((tool) => tool.name),
-      plainKeys: Object.keys(plain),
-      outputKeys: Object.keys(outputTool),
-      shapedKeys: Object.keys(shapedTool),
-      hasPlainOutput: Object.hasOwn(plain, "outputSchema"),
-      hasOutputOnlyInput: Object.hasOwn(outputTool, "inputSchema"),
+      plainOutput: plain.outputSchema,
+      outputOnlyInput: outputTool.inputSchema,
       outputOnly: outputTool.outputSchema,
       shapedInput: copied.inputSchema,
       shapedOutput: copied.outputSchema,
@@ -682,26 +777,8 @@ test("snapshots outputSchema, omits it when absent, and does not validate result
   });
 
   expect(result.names).toEqual(["output-only", "plain", "shaped"]);
-  expect(result.plainKeys).toEqual(["description", "name", "origin", "title", "window"]);
-  expect(result.outputKeys).toEqual([
-    "description",
-    "name",
-    "origin",
-    "outputSchema",
-    "title",
-    "window",
-  ]);
-  expect(result.shapedKeys).toEqual([
-    "description",
-    "inputSchema",
-    "name",
-    "origin",
-    "outputSchema",
-    "title",
-    "window",
-  ]);
-  expect(result.hasPlainOutput).toBe(false);
-  expect(result.hasOutputOnlyInput).toBe(false);
+  expect(result.plainOutput).toBeNull();
+  expect(result.outputOnlyInput).toBeNull();
   expect(result.outputOnly).toEqual({
     type: "object",
     properties: { result: { type: "string", description: "The result string" } },
