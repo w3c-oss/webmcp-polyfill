@@ -78,6 +78,12 @@ Both entry points are SSR-safe: installation does nothing without a document. Yo
 
 The package needs no `"use client"` directive. Use it on your [Client Components](https://nextjs.org/docs/app/api-reference/directives/use-client) and access `document.modelContext` in effects or event handlers. Pass an `AbortSignal` when registering in an effect, then abort it during cleanup.
 
+### Frameworks
+
+Guides for other frameworks:
+
+- [Angular](https://github.com/w3c-oss/webmcp-polyfill/blob/main/docs/frameworks/angular.md)
+
 ## Frames
 
 Load the polyfill in each frame. Same-origin tools are visible by default, including those in parents and siblings. Pass the discovered descriptor to `executeTool()` so names shared by different frames reach the correct owner.
