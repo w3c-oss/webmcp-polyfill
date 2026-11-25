@@ -49,13 +49,10 @@ Reports go to `wpt-results/<browser>.json`. Upstream tests stay unmodified;
 passes, unexpected failures, and incomplete runs fail the command. Crashtests and
 other non-testharness files are outside this suite.
 
-WPT injects the polyfill into every HTML page it serves except empty ones, so the runner
-serves the empty `/common/blank.html` with the markup that injection produces elsewhere,
-copied from `tools/serve/serve.py` at the pin; update it when that markup changes. wptrunner
-reads server overrides from `config.json` in the WPT root, a file WPT's `.gitignore` lists.
-The runner creates it only if it does not exist, and removes it afterwards, including after
-an interrupt. Documents not served by WPT, such as `javascript:` URL results, still run
-without the polyfill.
+WPT injection skips empty pages, so the runner serves the empty `/common/blank.html` with
+the markup from `tools/serve/serve.py`, through a temporary `config.json` in the WPT root
+(listed in WPT's `.gitignore`); it never replaces an existing one. Documents WPT does not
+serve, such as `javascript:` URL results, still run without the polyfill.
 
 ## Draft alignment and limitations
 
@@ -69,7 +66,8 @@ the `Tool` interface follows [webmcp#348](https://github.com/webmachinelearning/
 other draft changes since `eada13b` are not yet reviewed.
 
 - **Missing APIs:** declarative forms and CSS states are not implemented. The pinned WPT
-  also covers `resumeTool()`, which is not in the draft; those subtests are expected failures.
+  also covers `resumeTool()`, which is not in the draft; those
+  subtests are expected failures.
 - **waitForToolsUntil():** the draft's tools ready state is read only by browser agent
   observations, which the polyfill has no counterpart for, so it records no state and sets
   no timeout. It converts the argument, throws the draft's errors, and reacts to the promise,

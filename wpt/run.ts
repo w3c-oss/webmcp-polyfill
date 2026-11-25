@@ -1,14 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -77,87 +69,64 @@ const reportPath = fileURLToPath(new URL(`../wpt-results/${browser}.json`, impor
 mkdirSync(dirname(reportPath), { recursive: true });
 rmSync(reportPath, { force: true });
 
-const polyfillPath = fileURLToPath(new URL("../dist/polyfill.js", import.meta.url));
-
-// /common/blank.html is empty, and wptserve's inject_script() leaves a document unchanged when
-// it finds no insertion point, so helper frames would run without the polyfill. Serve it with
-// the markup the injector produces for other pages (tools/serve/serve.py at the pin). wptrunner
-// reads server overrides only from config.json in the WPT root; WPT's .gitignore lists it.
+// /common/blank.html is empty, and wptserve's inject_script() leaves such a document unchanged,
+// so serve it with the markup injection adds to other pages (tools/serve/serve.py). wptrunner
+// reads server overrides only from config.json in the WPT root, which WPT's .gitignore lists.
+const helperRoot = resolve(dirname(reportPath), "helpers");
+mkdirSync(helperRoot, { recursive: true });
+const polyfill = readFileSync(new URL("../dist/polyfill.js", import.meta.url), "utf8");
+writeFileSync(
+  resolve(helperRoot, "blank.html"),
+  `<script>\n${polyfill}\n// Remove the injected script tag from the DOM.\n` +
+    "document.currentScript.remove();\n</script>\n",
+);
 const serverConfigPath = resolve(wptRoot, "config.json");
-const helperRoot = mkdtempSync(resolve(tmpdir(), "webmcp-wpt-"));
-const injectedBlankPage =
-  "<script>\n" +
-  readFileSync(polyfillPath, "utf8") +
-  "\n// Remove the injected script tag from the DOM.\ndocument.currentScript.remove();\n</script>\n";
-writeFileSync(resolve(helperRoot, "blank.html"), injectedBlankPage);
-const serverConfig = {
-  aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }],
-};
-try {
-  // Exclusive creation never replaces a configuration the runner did not write.
-  writeFileSync(serverConfigPath, JSON.stringify(serverConfig), { flag: "wx" });
-} catch (error) {
-  rmSync(helperRoot, { recursive: true, force: true });
-  if (error instanceof Error && "code" in error && error.code === "EEXIST") {
-    throw new Error(`Remove ${serverConfigPath}; the runner writes its own server configuration`);
-  }
-  throw error;
+// Exclusive creation never replaces a configuration the runner did not write.
+writeFileSync(
+  serverConfigPath,
+  JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
+  { flag: "wx" },
+);
+process.on("exit", () => rmSync(serverConfigPath, { force: true }));
+// Without a listener, these signals end Node before the exit cleanup; WPT still receives them.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {});
 }
 
-// Node's default action for these signals exits without running the cleanup below. With a
-// listener, an interrupt from the terminal still reaches WPT, which exits, and cleanup runs.
-const interruptSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
-const ignoreInterrupt = (): void => {};
-for (const signal of interruptSignals) {
-  process.on(signal, ignoreInterrupt);
-}
-
-let wptRun: ReturnType<typeof spawnSync>;
-try {
-  wptRun = spawnSync(
-    process.env.WPT_PYTHON ?? "python3",
-    [
-      resolve(wptRoot, "wpt"),
-      "--venv",
-      process.env.WPT_VENV ?? resolve(wptRoot, "_venv_polyfill"),
-      "run",
-      ...browserArguments,
-      "--yes",
-      "--test-types",
-      "testharness",
-      "--inject-script",
-      polyfillPath,
-      "--manifest",
-      resolve(wptRoot, "MANIFEST.json"),
-      "--metadata",
-      fileURLToPath(new URL("./metadata", import.meta.url)),
-      "--log-mach=-",
-      "--log-wptreport",
-      reportPath,
-      "--no-pause-after-test",
-      "--processes",
-      browser === "safari" ? "1" : "4",
-      "--retry-unexpected=0",
-      "--no-manifest-download",
-      "--include",
-      "/webmcp",
-      ...process.argv.slice(2),
-      browser,
-    ],
-    { cwd: wptRoot, stdio: "inherit" },
-  );
-} finally {
-  rmSync(serverConfigPath, { force: true });
-  rmSync(helperRoot, { recursive: true, force: true });
-  for (const signal of interruptSignals) {
-    process.off(signal, ignoreInterrupt);
-  }
-}
+const wptRun = spawnSync(
+  process.env.WPT_PYTHON ?? "python3",
+  [
+    resolve(wptRoot, "wpt"),
+    "--venv",
+    process.env.WPT_VENV ?? resolve(wptRoot, "_venv_polyfill"),
+    "run",
+    ...browserArguments,
+    "--yes",
+    "--test-types",
+    "testharness",
+    "--inject-script",
+    fileURLToPath(new URL("../dist/polyfill.js", import.meta.url)),
+    "--manifest",
+    resolve(wptRoot, "MANIFEST.json"),
+    "--metadata",
+    fileURLToPath(new URL("./metadata", import.meta.url)),
+    "--log-mach=-",
+    "--log-wptreport",
+    reportPath,
+    "--no-pause-after-test",
+    "--processes",
+    browser === "safari" ? "1" : "4",
+    "--retry-unexpected=0",
+    "--no-manifest-download",
+    "--include",
+    "/webmcp",
+    ...process.argv.slice(2),
+    browser,
+  ],
+  { cwd: wptRoot, stdio: "inherit" },
+);
 if (wptRun.error) {
   throw wptRun.error;
-}
-if (wptRun.signal) {
-  throw new Error(`WPT was interrupted by ${wptRun.signal}`);
 }
 const reportContents = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
 if (!reportContents.trim()) {

@@ -442,12 +442,30 @@ export class FrameBridge {
   }
 
   async #documentAllowed(owner: Document): Promise<boolean> {
-    const result = walkToolsPolicy(owner);
-    if (typeof result === "boolean") {
-      return result;
+    const view = activeWindow(owner);
+    if (!view) {
+      return false;
     }
-    // The walk stopped below a cross-origin parent, which can answer only by message.
-    return this.#parentPermission(result, result.origin);
+    const policy = readToolsPolicy(owner);
+    if (policy !== undefined) {
+      return policy;
+    }
+    if (view === view.parent) {
+      return true;
+    }
+    // Firefox has no ancestorOrigins; there the parent is simply tried.
+    const parentOrigin = view.location.ancestorOrigins?.[0];
+    const parentDocument = readDocument(
+      view.parent,
+      parentOrigin === undefined || parentOrigin === view.origin,
+    );
+    if (!parentDocument) {
+      return this.#parentPermission(view, view.origin);
+    }
+    return (
+      childAllowed(parentDocument, view, view.origin) &&
+      (await this.#documentAllowed(parentDocument))
+    );
   }
 
   async #sourceAllowed(source: Window, origin: string): Promise<boolean> {
@@ -697,42 +715,33 @@ export function readToolsPolicy(owner: Document): boolean | undefined {
     : undefined;
 }
 
-// For operations that throw rather than reject: undefined where a cross-origin ancestor would
-// have to answer by message.
+// The synchronous part of FrameBridge's #documentAllowed(), for operations that throw rather than
+// reject: undefined where a cross-origin ancestor would have to answer by message.
 export function readAncestorToolsPolicy(owner: Document): boolean | undefined {
-  const result = walkToolsPolicy(owner);
-  return typeof result === "boolean" ? result : undefined;
-}
-
-// Reads the policy through same-origin ancestors. When a parent is cross-origin, returns the
-// window whose permission that parent must report, since only a message can reach it.
-function walkToolsPolicy(owner: Document): boolean | Window {
-  let currentDocument = owner;
-  let view = activeWindow(currentDocument);
-  while (view) {
-    const policy = readToolsPolicy(currentDocument);
-    if (policy !== undefined) {
-      return policy;
-    }
-    if (view === view.parent) {
-      return true;
-    }
-    // Firefox has no ancestorOrigins; there the parent is simply tried.
-    const parentOrigin = view.location.ancestorOrigins?.[0];
-    const parentDocument = readDocument(
-      view.parent,
-      parentOrigin === undefined || parentOrigin === view.origin,
-    );
-    if (!parentDocument) {
-      return view;
-    }
-    if (!childAllowed(parentDocument, view, view.origin)) {
-      return false;
-    }
-    currentDocument = parentDocument;
-    view = activeWindow(currentDocument);
+  const view = activeWindow(owner);
+  if (!view) {
+    return false;
   }
-  return false;
+  const policy = readToolsPolicy(owner);
+  if (policy !== undefined) {
+    return policy;
+  }
+  if (view === view.parent) {
+    return true;
+  }
+  // Firefox has no ancestorOrigins; there the parent is simply tried.
+  const parentOrigin = view.location.ancestorOrigins?.[0];
+  const parentDocument = readDocument(
+    view.parent,
+    parentOrigin === undefined || parentOrigin === view.origin,
+  );
+  if (!parentDocument) {
+    return undefined;
+  }
+  if (!childAllowed(parentDocument, view, view.origin)) {
+    return false;
+  }
+  return readAncestorToolsPolicy(parentDocument);
 }
 
 function toToolSnapshots(

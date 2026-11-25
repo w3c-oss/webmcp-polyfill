@@ -723,8 +723,7 @@ function requireActiveWindow(owner: Document): Window {
     throw new NativeDOMException("The document is not active.", "InvalidStateError");
   }
 
-  // Synchronous where the browser exposes the policy. waitForToolsUntil() also reads same-origin
-  // ancestors, and FrameBridge.allowed() covers the rest for the asynchronous operations.
+  // Synchronous where the browser exposes the policy; FrameBridge.allowed() covers the rest.
   if (readToolsPolicy(owner) === false) {
     throw new NativeDOMException(
       'Access to the feature "tools" is disallowed by permissions policy.',
