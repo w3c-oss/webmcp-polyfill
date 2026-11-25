@@ -95,7 +95,7 @@ Initial discovery waits up to 500 ms for existing frames. Requests use `MessageC
 
 ## Implementation status
 
-The polyfill targets `webmcp-types@0.2.0` and covers registration, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself.
+The polyfill targets `webmcp-types` with `waitForToolsUntil()` from [webmcp-types#20](https://github.com/webmachinelearning/webmcp-types/pull/20), pinned to that pull request until it is released, and covers registration, `waitForToolsUntil()`, discovery, execution, cancellation, `toolchange` and the `toolactivated`/`toolcancel` events, including frame exposure and origin filtering. Declarative forms are not implemented yet. Talking to an actual browser agent needs support from the browser itself, so `waitForToolsUntil()` only validates its call and marks the promise as handled.
 
 Native contexts do not join the polyfill's channels. [TESTING.md](https://github.com/w3c-oss/webmcp-polyfill/blob/main/TESTING.md) lists the known differences from the draft, the test commands, and the spec and WPT revisions we test against.
 

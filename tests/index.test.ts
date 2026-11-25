@@ -22,7 +22,12 @@ test("operations reject invalid receivers before reading arguments", async ({ pa
     };
     const errors = [];
     const receivers = [{}, Object.create(Object.getPrototypeOf(context)), null, undefined];
-    for (const method of [context.registerTool, context.getTools, context.executeTool]) {
+    for (const method of [
+      context.registerTool,
+      context.waitForToolsUntil,
+      context.getTools,
+      context.executeTool,
+    ]) {
       for (const receiver of receivers) {
         try {
           await Reflect.apply(method, receiver, [argument, {}]);
@@ -38,7 +43,7 @@ test("operations reject invalid receivers before reading arguments", async ({ pa
     return { reads, errors };
   });
 
-  expect(outcome).toEqual({ reads: 0, errors: Array(12).fill("TypeError") });
+  expect(outcome).toEqual({ reads: 0, errors: Array(16).fill("TypeError") });
 });
 
 test("origin filters accept only potentially trustworthy origins", async ({ page }) => {
@@ -368,7 +373,9 @@ test("operations on a real detached frame reject in the frame's realm", async ({
     await loaded;
     const context = iframe.contentDocument!.modelContext!;
     const tool = (await context.getTools())[0]!;
-    const FrameException = iframe.contentDocument!.defaultView!.DOMException;
+    const frameWindow = iframe.contentDocument!.defaultView!;
+    const FrameException = frameWindow.DOMException;
+    const FrameTypeError = frameWindow.TypeError;
     iframe.remove();
     const errors = [];
     for (const operation of [
@@ -376,17 +383,26 @@ test("operations on a real detached frame reject in the frame's realm", async ({
       () =>
         context.registerTool({ name: "detached", description: "Detached", execute: () => null }),
       () => context.executeTool(tool, {}),
+      () => context.waitForToolsUntil(new Promise(() => {})),
+      // Argument conversion precedes the fully active check.
+      () => Reflect.apply(context.waitForToolsUntil, context, []),
     ]) {
       try {
         await operation();
         errors.push("resolved");
       } catch (error) {
-        errors.push(error instanceof FrameException ? error.name : "wrong realm");
+        if (error instanceof FrameException) {
+          errors.push(error.name);
+        } else if (error instanceof FrameTypeError) {
+          errors.push("TypeError");
+        } else {
+          errors.push("wrong realm");
+        }
       }
     }
     return errors;
   });
-  expect(frame).toEqual(["InvalidStateError", "InvalidStateError", "InvalidStateError"]);
+  expect(frame).toEqual([...Array(4).fill("InvalidStateError"), "TypeError"]);
 });
 
 test("installs once, exposes only standard members, and keeps document identity", async ({
@@ -433,7 +449,12 @@ test("installs once, exposes only standard members, and keeps document identity"
       writable: descriptor.set !== undefined,
       alias: "modelContext" in navigator,
       testing: "modelContextTesting" in navigator,
-      lengths: [context.registerTool.length, context.getTools.length, context.executeTool.length],
+      lengths: [
+        context.registerTool.length,
+        context.waitForToolsUntil.length,
+        context.getTools.length,
+        context.executeTool.length,
+      ],
       constructionError,
       getterErrors,
     };
@@ -447,6 +468,7 @@ test("installs once, exposes only standard members, and keeps document identity"
       "ontoolcancel",
       "ontoolchange",
       "registerTool",
+      "waitForToolsUntil",
     ],
     own: [],
     brand: "[object ModelContext]",
@@ -456,7 +478,7 @@ test("installs once, exposes only standard members, and keeps document identity"
     writable: false,
     alias: false,
     testing: false,
-    lengths: [1, 0, 1],
+    lengths: [1, 1, 0, 1],
     constructionError: "TypeError",
     getterErrors: ["TypeError", "TypeError", "TypeError", "TypeError", "TypeError"],
   });
@@ -1097,4 +1119,123 @@ test("a detached frame rejects even when its exception constructor was never rea
     }
   });
   expect(result).toEqual({ name: "InvalidStateError", type: "[object DOMException]" });
+});
+
+test("waitForToolsUntil() converts any value and marks the promise as handled", async ({
+  page,
+}) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const outcome = await page.evaluate(async () => {
+    const context = document.modelContext!;
+    const conversions = [];
+    for (const args of [[42], [undefined], [Promise.resolve()], []]) {
+      try {
+        Reflect.apply(context.waitForToolsUntil, context, args);
+        conversions.push("returned");
+      } catch (error) {
+        if (!(error instanceof Error)) {
+          throw error;
+        }
+        conversions.push(error.name);
+      }
+    }
+
+    const awaited = Promise.reject(new Error("awaited"));
+    // A rejection that nothing reacts to shows when this browser reports unhandled ones.
+    const ignored = Promise.reject(new Error("ignored"));
+    const unhandled: Promise<unknown>[] = [];
+    const ignoredReported = new Promise<void>((resolve) => {
+      window.addEventListener("unhandledrejection", (event) => {
+        event.preventDefault();
+        unhandled.push(event.promise);
+        if (event.promise === ignored) {
+          resolve();
+        }
+      });
+    });
+    context.waitForToolsUntil(awaited);
+    await ignoredReported;
+    return { conversions, awaitedReported: unhandled.includes(awaited) };
+  });
+
+  expect(outcome).toEqual({
+    conversions: ["returned", "returned", "returned", "TypeError"],
+    awaitedReported: false,
+  });
+});
+
+test("waitForToolsUntil() synchronously reads neither a promise's constructor nor Promise[Symbol.species]", async ({
+  page,
+}) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const outcome = await page.evaluate(() => {
+    const context = document.modelContext!;
+    const reads: string[] = [];
+    const speciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species)!;
+    Object.defineProperty(Promise, Symbol.species, {
+      configurable: true,
+      get() {
+        reads.push("species");
+        throw new Error("Read Promise[Symbol.species]");
+      },
+    });
+    const awaited = Promise.resolve();
+    Object.defineProperty(awaited, "constructor", {
+      get() {
+        reads.push("constructor");
+        throw new Error("Read the promise's constructor");
+      },
+    });
+    const errors = [];
+    try {
+      // Web IDL resolves a new promise with the argument and reacts without a species lookup.
+      for (const value of [awaited, 42]) {
+        try {
+          Reflect.apply(context.waitForToolsUntil, context, [value]);
+          errors.push("returned");
+        } catch (error) {
+          if (!(error instanceof Error)) {
+            throw error;
+          }
+          errors.push(error.message);
+        }
+      }
+    } finally {
+      Object.defineProperty(Promise, Symbol.species, speciesDescriptor);
+    }
+    return { errors, reads };
+  });
+
+  expect(outcome).toEqual({ errors: ["returned", "returned"], reads: [] });
+});
+
+test("waitForToolsUntil() throws NotAllowedError when a same-origin parent withholds tools", async ({
+  page,
+}) => {
+  // The /app iframe installs the polyfill; this document deliberately does not.
+  const outcome = await page.evaluate(async () => {
+    const results = [];
+    for (const allow of ["tools 'none'", ""]) {
+      const iframe = document.createElement("iframe");
+      iframe.src = "/app";
+      iframe.allow = allow;
+      const loaded = new Promise<void>((resolve) => {
+        iframe.onload = () => resolve();
+      });
+      document.body.append(iframe);
+      await loaded;
+      const frameDocument = iframe.contentDocument!;
+      const FrameException = frameDocument.defaultView!.DOMException;
+      try {
+        frameDocument.modelContext!.waitForToolsUntil(Promise.resolve());
+        results.push("returned");
+      } catch (error) {
+        results.push(error instanceof FrameException ? error.name : "wrong realm");
+      }
+      iframe.remove();
+    }
+    return results;
+  });
+
+  expect(outcome).toEqual(["NotAllowedError", "returned"]);
 });

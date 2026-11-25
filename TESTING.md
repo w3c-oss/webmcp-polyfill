@@ -29,7 +29,7 @@ context and its tools.
 
 WPT needs Python 3.11+ and a clean checkout at
 [`536ae94`](https://github.com/web-platform-tests/wpt/commit/536ae943008db6f9a5aeb05c8f174dc6d3e763fa).
-The [CI workflow](.github/workflows/test.yml) has the sparse-checkout and dependency setup.
+The [CI workflow](.github/workflows/release.yml) has the sparse-checkout and dependency setup.
 
 ```sh
 WPT_ROOT=../wpt CHROME_BIN=/path/to/chrome-canary pnpm test:wpt
@@ -49,6 +49,11 @@ Reports go to `wpt-results/<browser>.json`. Upstream tests stay unmodified;
 passes, unexpected failures, and incomplete runs fail the command. Crashtests and
 other non-testharness files are outside this suite.
 
+WPT injection skips empty pages, so the runner serves the empty `/common/blank.html` with
+the markup from `tools/serve/serve.py`, through a temporary `config.json` in the WPT root
+(listed in WPT's `.gitignore`); it never replaces an existing one. Documents WPT does not
+serve, such as `javascript:` URL results, still run without the polyfill.
+
 ## Draft alignment and limitations
 
 Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/blob/eada13b575187ba9a523adc0c52e294ebdb6b597/index.bs).
@@ -56,11 +61,20 @@ Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/b
 (draft `6cd745a`), lifecycle event timing follows
 [webmcp#371](https://github.com/webmachinelearning/webmcp/pull/371) (draft `f2f2ae2`), and
 the `Tool` interface follows [webmcp#348](https://github.com/webmachinelearning/webmcp/pull/348)
-(draft `14b6d53`); the other draft changes since `eada13b` are not yet reviewed.
+(draft `14b6d53`), and `waitForToolsUntil()` follows
+[webmcp#373](https://github.com/webmachinelearning/webmcp/pull/373) (draft `47e2b99`); the
+other draft changes since `eada13b` are not yet reviewed.
 
 - **Missing APIs:** declarative forms and CSS states are not implemented. The pinned WPT
-  also covers `waitForToolsUntil()` and `resumeTool()`, which are not in the draft; those
+  also covers `resumeTool()`, which is not in the draft; those
   subtests are expected failures.
+- **waitForToolsUntil():** the draft's tools ready state is read only by browser agent
+  observations, which the polyfill has no counterpart for, so it records no state and sets
+  no timeout. It converts the argument, throws the draft's errors, and reacts to the promise,
+  which marks a rejection as handled. A synchronous method cannot wait for a cross-origin
+  ancestor's permission reply, so it throws `NotAllowedError` only when native policy
+  introspection or a same-origin ancestor's `allow` attribute denies `tools`; the
+  cross-origin WPT subtest is an expected failure.
 - **Draft differences:** results are JSON-serialized; some pinned tests expect raw
   strings. Omitted or `undefined` input becomes `{}`; `null` and primitives reject.
 - **Lifecycle events:** script-dispatched events cannot be
@@ -88,7 +102,7 @@ the `Tool` interface follows [webmcp#348](https://github.com/webmachinelearning/
   Delegated permission checks are asynchronous, so argument errors can precede
   `NotAllowedError`.
 - **Frames:** each participating document must load the polyfill. Native contexts
-  and WPT's uninstrumented blank helper documents cannot answer its messages.
+  and documents WPT does not serve, such as `javascript:` URL results, cannot answer its messages.
   Opaque-origin handshakes and inaccessible cross-origin shadow frames are
   unsupported; closed shadow trees limit discovery and ordering.
 - **Deadlines:** initial discovery, handshakes, and discovery or permission replies

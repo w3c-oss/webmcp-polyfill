@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,6 +69,38 @@ const reportPath = fileURLToPath(new URL(`../wpt-results/${browser}.json`, impor
 mkdirSync(dirname(reportPath), { recursive: true });
 rmSync(reportPath, { force: true });
 
+// /common/blank.html is empty, and wptserve's inject_script() leaves such a document unchanged,
+// so serve it with the markup injection adds to other pages (tools/serve/serve.py). wptrunner
+// reads server overrides only from config.json in the WPT root, which WPT's .gitignore lists.
+const helperRoot = resolve(dirname(reportPath), "helpers");
+mkdirSync(helperRoot, { recursive: true });
+const polyfill = readFileSync(new URL("../dist/polyfill.js", import.meta.url), "utf8");
+writeFileSync(
+  resolve(helperRoot, "blank.html"),
+  `<script>\n${polyfill}\n// Remove the injected script tag from the DOM.\n` +
+    "document.currentScript.remove();\n</script>\n",
+);
+const serverConfigPath = resolve(wptRoot, "config.json");
+// Exclusive creation never replaces a configuration the runner did not write.
+try {
+  writeFileSync(
+    serverConfigPath,
+    JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
+    { flag: "wx" },
+  );
+} catch (error) {
+  if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+    throw new Error(`${serverConfigPath} exists; delete it if an interrupted run left it`);
+  }
+  throw error;
+}
+process.on("exit", () => rmSync(serverConfigPath, { force: true }));
+// Without a listener, these signals end Node before the exit cleanup. A terminal interrupt
+// also reaches WPT, which stops; a signal sent to Node alone waits for WPT to finish.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, () => {});
+}
+
 const wptRun = spawnSync(
   process.env.WPT_PYTHON ?? "python3",
   [
@@ -103,6 +135,9 @@ const wptRun = spawnSync(
 );
 if (wptRun.error) {
   throw wptRun.error;
+}
+if (wptRun.signal) {
+  throw new Error(`WPT was interrupted by ${wptRun.signal}`);
 }
 const reportContents = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
 if (!reportContents.trim()) {

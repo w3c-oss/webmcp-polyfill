@@ -10,6 +10,7 @@ import {
   activeWindow,
   annotationNames,
   executionError,
+  readAncestorToolsPolicy,
   readToolsPolicy,
   type ExecutionFailure,
   type ToolMetadata,
@@ -19,6 +20,10 @@ export type { WebMCP } from "webmcp-types";
 
 // Detached windows may stop exposing these bindings.
 const NativeDOMException = globalThis.DOMException;
+// Author changes to Promise must not reach Web IDL promise conversion or reactions.
+const NativePromise = Promise;
+const promiseThen = Promise.prototype.then;
+const defineProperty = Object.defineProperty;
 
 interface StoredTool {
   metadata: ToolMetadata;
@@ -244,6 +249,29 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       this.#tools.set(toolId, storedTool);
       frames.notify(exposedOrigins).then(resolve, reject);
     });
+  }
+
+  // The draft's tools ready state is read only by browser agent observations, which have no
+  // counterpart here, so the polyfill keeps none. The observable effects remain: argument
+  // conversion, the thrown errors, and reacting to the promise, which marks it as handled.
+  waitForToolsUntil(promise: unknown): void {
+    const ownerDocument = this.#document;
+    // Every value converts to Promise<any>, so only a missing argument fails conversion.
+    if (arguments.length < 1) {
+      throw new TypeError("waitForToolsUntil() requires a promise");
+    }
+    const readinessPromise = toPromise(promise);
+
+    requireActiveWindow(ownerDocument);
+    // A cross-origin ancestor answers only by message, which a synchronous method cannot await.
+    if (readAncestorToolsPolicy(ownerDocument) === false) {
+      throw new NativeDOMException(
+        'Access to the feature "tools" is disallowed by permissions policy.',
+        "NotAllowedError",
+      );
+    }
+
+    reactToPromise(readinessPromise, () => {});
   }
 
   async getTools(options: WebMCP.ModelContextGetToolOptions = {}): Promise<WebMCP.Tool[]> {
@@ -504,6 +532,7 @@ Object.defineProperties(ModelContextPolyfill.prototype, {
   constructor: { value: modelContextConstructor, configurable: true, writable: true },
   [Symbol.toStringTag]: { value: "ModelContext", configurable: true },
   registerTool: { enumerable: true },
+  waitForToolsUntil: { enumerable: true },
   getTools: { enumerable: true },
   executeTool: { enumerable: true },
   ontoolchange: { enumerable: true },
@@ -601,6 +630,23 @@ function readAbortSignal(value: unknown): AbortSignal | undefined {
   // SAFETY: any() validates the native brand across realms before we use the signal.
   // Composition also survives stopImmediatePropagation() on the original signal.
   return AbortSignal.any([value as AbortSignal]);
+}
+
+// https://webidl.spec.whatwg.org/#js-promise
+// Resolving a new promise reads only a thenable's then, as Web IDL's conversion does;
+// Promise.resolve() would also read a native promise's constructor. The promise stays private,
+// so its own undefined constructor makes then() use %Promise% without a species lookup, like
+// PerformPromiseThen.
+function toPromise(value: unknown): Promise<unknown> {
+  const promise = new NativePromise((resolve) => resolve(value));
+  defineProperty(promise, "constructor", { value: undefined });
+  return promise;
+}
+
+// https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled
+// Reacting marks the promise as handled, so a rejection is not reported as unhandled.
+function reactToPromise(promise: Promise<unknown>, onSettled: () => void): void {
+  Reflect.apply(promiseThen, promise, [onSettled, onSettled]);
 }
 
 // https://webidl.spec.whatwg.org/#es-sequence
