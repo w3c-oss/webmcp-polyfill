@@ -82,13 +82,21 @@ writeFileSync(
 );
 const serverConfigPath = resolve(wptRoot, "config.json");
 // Exclusive creation never replaces a configuration the runner did not write.
-writeFileSync(
-  serverConfigPath,
-  JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
-  { flag: "wx" },
-);
+try {
+  writeFileSync(
+    serverConfigPath,
+    JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
+    { flag: "wx" },
+  );
+} catch (error) {
+  if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+    throw new Error(`${serverConfigPath} exists; delete it if an interrupted run left it`);
+  }
+  throw error;
+}
 process.on("exit", () => rmSync(serverConfigPath, { force: true }));
-// Without a listener, these signals end Node before the exit cleanup; WPT still receives them.
+// Without a listener, these signals end Node before the exit cleanup. A terminal interrupt
+// also reaches WPT, which stops; a signal sent to Node alone waits for WPT to finish.
 for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
   process.on(signal, () => {});
 }
@@ -127,6 +135,9 @@ const wptRun = spawnSync(
 );
 if (wptRun.error) {
   throw wptRun.error;
+}
+if (wptRun.signal) {
+  throw new Error(`WPT was interrupted by ${wptRun.signal}`);
 }
 const reportContents = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
 if (!reportContents.trim()) {

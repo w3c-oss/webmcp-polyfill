@@ -29,7 +29,7 @@ context and its tools.
 
 WPT needs Python 3.11+ and a clean checkout at
 [`536ae94`](https://github.com/web-platform-tests/wpt/commit/536ae943008db6f9a5aeb05c8f174dc6d3e763fa).
-The [CI workflow](.github/workflows/test.yml) has the sparse-checkout and dependency setup.
+The [CI workflow](.github/workflows/release.yml) has the sparse-checkout and dependency setup.
 
 ```sh
 WPT_ROOT=../wpt CHROME_BIN=/path/to/chrome-canary pnpm test:wpt

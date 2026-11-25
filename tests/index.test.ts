@@ -1164,7 +1164,7 @@ test("waitForToolsUntil() converts any value and marks the promise as handled", 
   });
 });
 
-test("waitForToolsUntil() reads neither a promise's constructor nor Promise[Symbol.species]", async ({
+test("waitForToolsUntil() synchronously reads neither a promise's constructor nor Promise[Symbol.species]", async ({
   page,
 }) => {
   await page.addScriptTag({ url: "/auto.js" });
