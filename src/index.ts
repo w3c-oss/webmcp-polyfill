@@ -10,6 +10,7 @@ import {
   activeWindow,
   annotationNames,
   executionError,
+  readAncestorToolsPolicy,
   readToolsPolicy,
   type ExecutionFailure,
   type ToolMetadata,
@@ -19,6 +20,9 @@ export type { WebMCP } from "webmcp-types";
 
 // Detached windows may stop exposing these bindings.
 const NativeDOMException = globalThis.DOMException;
+// Author changes to Promise must not alter Web IDL promise conversion or reactions.
+const resolvePromise = Promise.resolve.bind(Promise);
+const promiseThen = Promise.prototype.then;
 
 interface StoredTool {
   metadata: ToolMetadata;
@@ -244,6 +248,30 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       this.#tools.set(toolId, storedTool);
       frames.notify(exposedOrigins).then(resolve, reject);
     });
+  }
+
+  // The draft's tools ready state is read only by browser agent observations, which have no
+  // counterpart here, so the polyfill keeps none. The observable effects remain: argument
+  // conversion, the thrown errors, and reacting to the promise, which marks it as handled.
+  waitForToolsUntil(promise: unknown): void {
+    const ownerDocument = this.#document;
+    // Every value converts to Promise<any>, so only a missing argument fails conversion.
+    if (arguments.length < 1) {
+      throw new TypeError("waitForToolsUntil() requires a promise");
+    }
+    const readinessPromise = resolvePromise(promise);
+
+    requireActiveWindow(ownerDocument);
+    // A cross-origin ancestor answers only by message, which a synchronous method cannot await.
+    if (readAncestorToolsPolicy(ownerDocument) === false) {
+      throw new NativeDOMException(
+        'Access to the feature "tools" is disallowed by permissions policy.',
+        "NotAllowedError",
+      );
+    }
+
+    const settle = (): void => {};
+    Reflect.apply(promiseThen, readinessPromise, [settle, settle]);
   }
 
   async getTools(options: WebMCP.ModelContextGetToolOptions = {}): Promise<WebMCP.Tool[]> {
@@ -504,6 +532,7 @@ Object.defineProperties(ModelContextPolyfill.prototype, {
   constructor: { value: modelContextConstructor, configurable: true, writable: true },
   [Symbol.toStringTag]: { value: "ModelContext", configurable: true },
   registerTool: { enumerable: true },
+  waitForToolsUntil: { enumerable: true },
   getTools: { enumerable: true },
   executeTool: { enumerable: true },
   ontoolchange: { enumerable: true },

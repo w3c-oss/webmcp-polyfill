@@ -31,6 +31,11 @@ if (document.modelContext) {
     },
   });
 
+  const ready: void = context.waitForToolsUntil(Promise.resolve(42));
+  void ready;
+  // @ts-expect-error The promise argument is required.
+  context.waitForToolsUntil();
+
   const [tool] = await context.getTools();
   if (!tool) {
     throw new Error("The registered tool was not discovered");

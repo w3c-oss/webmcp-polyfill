@@ -715,6 +715,38 @@ export function readToolsPolicy(owner: Document): boolean | undefined {
     : undefined;
 }
 
+// The synchronous part of FrameBridge's permission check, for operations that throw rather than
+// reject. Same-origin ancestors are read directly; a cross-origin one can only answer by message,
+// so the result is undefined from there on.
+export function readAncestorToolsPolicy(owner: Document): boolean | undefined {
+  let currentDocument = owner;
+  let view = activeWindow(currentDocument);
+  while (view) {
+    const policy = readToolsPolicy(currentDocument);
+    if (policy !== undefined) {
+      return policy;
+    }
+    if (view === view.parent) {
+      return true;
+    }
+    // Firefox has no ancestorOrigins; there the parent is simply tried.
+    const parentOrigin = view.location.ancestorOrigins?.[0];
+    const parentDocument = readDocument(
+      view.parent,
+      parentOrigin === undefined || parentOrigin === view.origin,
+    );
+    if (!parentDocument) {
+      return undefined;
+    }
+    if (!childAllowed(parentDocument, view, view.origin)) {
+      return false;
+    }
+    currentDocument = parentDocument;
+    view = activeWindow(currentDocument);
+  }
+  return false;
+}
+
 function toToolSnapshots(
   toolList: ToolList,
   source: Window,

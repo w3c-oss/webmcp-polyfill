@@ -29,7 +29,7 @@
     "lint": "oxlint --deny-warnings"
   },
   "dependencies": {
-    "webmcp-types": "^0.2.0"
+    "webmcp-types": "github:webmachinelearning/webmcp-types#cceaa1585920089265c6fd9e084e824dc71fcaa3"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
