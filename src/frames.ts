@@ -442,30 +442,12 @@ export class FrameBridge {
   }
 
   async #documentAllowed(owner: Document): Promise<boolean> {
-    const view = activeWindow(owner);
-    if (!view) {
-      return false;
+    const result = walkToolsPolicy(owner);
+    if (typeof result === "boolean") {
+      return result;
     }
-    const policy = readToolsPolicy(owner);
-    if (policy !== undefined) {
-      return policy;
-    }
-    if (view === view.parent) {
-      return true;
-    }
-    // Firefox has no ancestorOrigins; there the parent is simply tried.
-    const parentOrigin = view.location.ancestorOrigins?.[0];
-    const parentDocument = readDocument(
-      view.parent,
-      parentOrigin === undefined || parentOrigin === view.origin,
-    );
-    if (!parentDocument) {
-      return this.#parentPermission(view, view.origin);
-    }
-    return (
-      childAllowed(parentDocument, view, view.origin) &&
-      (await this.#documentAllowed(parentDocument))
-    );
+    // The walk stopped below a cross-origin parent, which can answer only by message.
+    return this.#parentPermission(result, result.origin);
   }
 
   async #sourceAllowed(source: Window, origin: string): Promise<boolean> {
@@ -715,10 +697,16 @@ export function readToolsPolicy(owner: Document): boolean | undefined {
     : undefined;
 }
 
-// The synchronous part of FrameBridge's permission check, for operations that throw rather than
-// reject. Same-origin ancestors are read directly; a cross-origin one can only answer by message,
-// so the result is undefined from there on.
+// For operations that throw rather than reject: undefined where a cross-origin ancestor would
+// have to answer by message.
 export function readAncestorToolsPolicy(owner: Document): boolean | undefined {
+  const result = walkToolsPolicy(owner);
+  return typeof result === "boolean" ? result : undefined;
+}
+
+// Reads the policy through same-origin ancestors. When a parent is cross-origin, returns the
+// window whose permission that parent must report, since only a message can reach it.
+function walkToolsPolicy(owner: Document): boolean | Window {
   let currentDocument = owner;
   let view = activeWindow(currentDocument);
   while (view) {
@@ -736,7 +724,7 @@ export function readAncestorToolsPolicy(owner: Document): boolean | undefined {
       parentOrigin === undefined || parentOrigin === view.origin,
     );
     if (!parentDocument) {
-      return undefined;
+      return view;
     }
     if (!childAllowed(parentDocument, view, view.origin)) {
       return false;

@@ -50,10 +50,12 @@ passes, unexpected failures, and incomplete runs fail the command. Crashtests an
 other non-testharness files are outside this suite.
 
 WPT injects the polyfill into every HTML page it serves except empty ones, so the runner
-serves the empty `/common/blank.html` with the markup injection produces elsewhere. It does
-so through `config.json` in the WPT root, which WPT ignores; the runner refuses to start if
-that file exists and removes it afterwards. Documents not served by WPT, such as
-`javascript:` URL results, still run without the polyfill.
+serves the empty `/common/blank.html` with the markup that injection produces elsewhere,
+copied from `tools/serve/serve.py` at the pin; update it when that markup changes. wptrunner
+reads server overrides from `config.json` in the WPT root, a file WPT's `.gitignore` lists.
+The runner creates it only if it does not exist, and removes it afterwards, including after
+an interrupt. Documents not served by WPT, such as `javascript:` URL results, still run
+without the polyfill.
 
 ## Draft alignment and limitations
 

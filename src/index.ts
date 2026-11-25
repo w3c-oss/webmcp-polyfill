@@ -20,9 +20,10 @@ export type { WebMCP } from "webmcp-types";
 
 // Detached windows may stop exposing these bindings.
 const NativeDOMException = globalThis.DOMException;
-// Author changes to Promise must not alter Web IDL promise conversion or reactions.
-const resolvePromise = Promise.resolve.bind(Promise);
+// Author changes to Promise must not reach Web IDL promise conversion or reactions.
+const NativePromise = Promise;
 const promiseThen = Promise.prototype.then;
+const defineProperty = Object.defineProperty;
 
 interface StoredTool {
   metadata: ToolMetadata;
@@ -259,7 +260,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
     if (arguments.length < 1) {
       throw new TypeError("waitForToolsUntil() requires a promise");
     }
-    const readinessPromise = resolvePromise(promise);
+    const readinessPromise = toPromise(promise);
 
     requireActiveWindow(ownerDocument);
     // A cross-origin ancestor answers only by message, which a synchronous method cannot await.
@@ -270,8 +271,7 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
       );
     }
 
-    const settle = (): void => {};
-    Reflect.apply(promiseThen, readinessPromise, [settle, settle]);
+    reactToPromise(readinessPromise, () => {});
   }
 
   async getTools(options: WebMCP.ModelContextGetToolOptions = {}): Promise<WebMCP.Tool[]> {
@@ -632,6 +632,23 @@ function readAbortSignal(value: unknown): AbortSignal | undefined {
   return AbortSignal.any([value as AbortSignal]);
 }
 
+// https://webidl.spec.whatwg.org/#js-promise
+// Resolving a new promise reads only a thenable's then, as Web IDL's conversion does;
+// Promise.resolve() would also read a native promise's constructor. The promise stays private,
+// so its own undefined constructor makes then() use %Promise% without a species lookup, like
+// PerformPromiseThen.
+function toPromise(value: unknown): Promise<unknown> {
+  const promise = new NativePromise((resolve) => resolve(value));
+  defineProperty(promise, "constructor", { value: undefined });
+  return promise;
+}
+
+// https://webidl.spec.whatwg.org/#dfn-perform-steps-once-promise-is-settled
+// Reacting marks the promise as handled, so a rejection is not reported as unhandled.
+function reactToPromise(promise: Promise<unknown>, onSettled: () => void): void {
+  Reflect.apply(promiseThen, promise, [onSettled, onSettled]);
+}
+
 // https://webidl.spec.whatwg.org/#es-sequence
 function readOriginSequence(value: unknown): string[] {
   if (value === undefined) {
@@ -706,7 +723,8 @@ function requireActiveWindow(owner: Document): Window {
     throw new NativeDOMException("The document is not active.", "InvalidStateError");
   }
 
-  // Synchronous where the browser exposes the policy; FrameBridge.allowed() covers the rest.
+  // Synchronous where the browser exposes the policy. waitForToolsUntil() also reads same-origin
+  // ancestors, and FrameBridge.allowed() covers the rest for the asynchronous operations.
   if (readToolsPolicy(owner) === false) {
     throw new NativeDOMException(
       'Access to the feature "tools" is disallowed by permissions policy.',

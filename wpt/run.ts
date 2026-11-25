@@ -81,22 +81,36 @@ const polyfillPath = fileURLToPath(new URL("../dist/polyfill.js", import.meta.ur
 
 // /common/blank.html is empty, and wptserve's inject_script() leaves a document unchanged when
 // it finds no insertion point, so helper frames would run without the polyfill. Serve it with
-// the markup the injector produces for other pages. wptrunner reads server overrides only from
-// config.json in the WPT root, which WPT's .gitignore lists.
+// the markup the injector produces for other pages (tools/serve/serve.py at the pin). wptrunner
+// reads server overrides only from config.json in the WPT root; WPT's .gitignore lists it.
 const serverConfigPath = resolve(wptRoot, "config.json");
-if (existsSync(serverConfigPath)) {
-  throw new Error(`Remove ${serverConfigPath}; the runner writes its own server configuration`);
-}
 const helperRoot = mkdtempSync(resolve(tmpdir(), "webmcp-wpt-"));
 const injectedBlankPage =
   "<script>\n" +
   readFileSync(polyfillPath, "utf8") +
   "\n// Remove the injected script tag from the DOM.\ndocument.currentScript.remove();\n</script>\n";
 writeFileSync(resolve(helperRoot, "blank.html"), injectedBlankPage);
-writeFileSync(
-  serverConfigPath,
-  JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
-);
+const serverConfig = {
+  aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }],
+};
+try {
+  // Exclusive creation never replaces a configuration the runner did not write.
+  writeFileSync(serverConfigPath, JSON.stringify(serverConfig), { flag: "wx" });
+} catch (error) {
+  rmSync(helperRoot, { recursive: true, force: true });
+  if (error instanceof Error && "code" in error && error.code === "EEXIST") {
+    throw new Error(`Remove ${serverConfigPath}; the runner writes its own server configuration`);
+  }
+  throw error;
+}
+
+// Node's default action for these signals exits without running the cleanup below. With a
+// listener, an interrupt from the terminal still reaches WPT, which exits, and cleanup runs.
+const interruptSignals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+const ignoreInterrupt = (): void => {};
+for (const signal of interruptSignals) {
+  process.on(signal, ignoreInterrupt);
+}
 
 let wptRun: ReturnType<typeof spawnSync>;
 try {
@@ -135,9 +149,15 @@ try {
 } finally {
   rmSync(serverConfigPath, { force: true });
   rmSync(helperRoot, { recursive: true, force: true });
+  for (const signal of interruptSignals) {
+    process.off(signal, ignoreInterrupt);
+  }
 }
 if (wptRun.error) {
   throw wptRun.error;
+}
+if (wptRun.signal) {
+  throw new Error(`WPT was interrupted by ${wptRun.signal}`);
 }
 const reportContents = existsSync(reportPath) ? readFileSync(reportPath, "utf8") : "";
 if (!reportContents.trim()) {

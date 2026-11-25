@@ -373,7 +373,9 @@ test("operations on a real detached frame reject in the frame's realm", async ({
     await loaded;
     const context = iframe.contentDocument!.modelContext!;
     const tool = (await context.getTools())[0]!;
-    const FrameException = iframe.contentDocument!.defaultView!.DOMException;
+    const frameWindow = iframe.contentDocument!.defaultView!;
+    const FrameException = frameWindow.DOMException;
+    const FrameTypeError = frameWindow.TypeError;
     iframe.remove();
     const errors = [];
     for (const operation of [
@@ -382,17 +384,25 @@ test("operations on a real detached frame reject in the frame's realm", async ({
         context.registerTool({ name: "detached", description: "Detached", execute: () => null }),
       () => context.executeTool(tool, {}),
       () => context.waitForToolsUntil(new Promise(() => {})),
+      // Argument conversion precedes the fully active check.
+      () => Reflect.apply(context.waitForToolsUntil, context, []),
     ]) {
       try {
         await operation();
         errors.push("resolved");
       } catch (error) {
-        errors.push(error instanceof FrameException ? error.name : "wrong realm");
+        if (error instanceof FrameException) {
+          errors.push(error.name);
+        } else if (error instanceof FrameTypeError) {
+          errors.push("TypeError");
+        } else {
+          errors.push("wrong realm");
+        }
       }
     }
     return errors;
   });
-  expect(frame).toEqual(Array(4).fill("InvalidStateError"));
+  expect(frame).toEqual([...Array(4).fill("InvalidStateError"), "TypeError"]);
 });
 
 test("installs once, exposes only standard members, and keeps document identity", async ({
@@ -1152,6 +1162,51 @@ test("waitForToolsUntil() converts any value and marks the promise as handled", 
     conversions: ["returned", "returned", "returned", "TypeError"],
     awaitedReported: false,
   });
+});
+
+test("waitForToolsUntil() reads neither a promise's constructor nor Promise[Symbol.species]", async ({
+  page,
+}) => {
+  await page.addScriptTag({ url: "/auto.js" });
+  const outcome = await page.evaluate(() => {
+    const context = document.modelContext!;
+    const reads: string[] = [];
+    const speciesDescriptor = Object.getOwnPropertyDescriptor(Promise, Symbol.species)!;
+    Object.defineProperty(Promise, Symbol.species, {
+      configurable: true,
+      get() {
+        reads.push("species");
+        throw new Error("Read Promise[Symbol.species]");
+      },
+    });
+    const awaited = Promise.resolve();
+    Object.defineProperty(awaited, "constructor", {
+      get() {
+        reads.push("constructor");
+        throw new Error("Read the promise's constructor");
+      },
+    });
+    const errors = [];
+    try {
+      // Web IDL resolves a new promise with the argument and reacts without a species lookup.
+      for (const value of [awaited, 42]) {
+        try {
+          Reflect.apply(context.waitForToolsUntil, context, [value]);
+          errors.push("returned");
+        } catch (error) {
+          if (!(error instanceof Error)) {
+            throw error;
+          }
+          errors.push(error.message);
+        }
+      }
+    } finally {
+      Object.defineProperty(Promise, Symbol.species, speciesDescriptor);
+    }
+    return { errors, reads };
+  });
+
+  expect(outcome).toEqual({ errors: ["returned", "returned"], reads: [] });
 });
 
 test("waitForToolsUntil() throws NotAllowedError when a same-origin parent withholds tools", async ({
