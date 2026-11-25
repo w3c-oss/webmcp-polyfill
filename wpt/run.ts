@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,38 +77,65 @@ const reportPath = fileURLToPath(new URL(`../wpt-results/${browser}.json`, impor
 mkdirSync(dirname(reportPath), { recursive: true });
 rmSync(reportPath, { force: true });
 
-const wptRun = spawnSync(
-  process.env.WPT_PYTHON ?? "python3",
-  [
-    resolve(wptRoot, "wpt"),
-    "--venv",
-    process.env.WPT_VENV ?? resolve(wptRoot, "_venv_polyfill"),
-    "run",
-    ...browserArguments,
-    "--yes",
-    "--test-types",
-    "testharness",
-    "--inject-script",
-    fileURLToPath(new URL("../dist/polyfill.js", import.meta.url)),
-    "--manifest",
-    resolve(wptRoot, "MANIFEST.json"),
-    "--metadata",
-    fileURLToPath(new URL("./metadata", import.meta.url)),
-    "--log-mach=-",
-    "--log-wptreport",
-    reportPath,
-    "--no-pause-after-test",
-    "--processes",
-    browser === "safari" ? "1" : "4",
-    "--retry-unexpected=0",
-    "--no-manifest-download",
-    "--include",
-    "/webmcp",
-    ...process.argv.slice(2),
-    browser,
-  ],
-  { cwd: wptRoot, stdio: "inherit" },
+const polyfillPath = fileURLToPath(new URL("../dist/polyfill.js", import.meta.url));
+
+// /common/blank.html is empty, and wptserve's inject_script() leaves a document unchanged when
+// it finds no insertion point, so helper frames would run without the polyfill. Serve it with
+// the markup the injector produces for other pages. wptrunner reads server overrides only from
+// config.json in the WPT root, which WPT's .gitignore lists.
+const serverConfigPath = resolve(wptRoot, "config.json");
+if (existsSync(serverConfigPath)) {
+  throw new Error(`Remove ${serverConfigPath}; the runner writes its own server configuration`);
+}
+const helperRoot = mkdtempSync(resolve(tmpdir(), "webmcp-wpt-"));
+const injectedBlankPage =
+  "<script>\n" +
+  readFileSync(polyfillPath, "utf8") +
+  "\n// Remove the injected script tag from the DOM.\ndocument.currentScript.remove();\n</script>\n";
+writeFileSync(resolve(helperRoot, "blank.html"), injectedBlankPage);
+writeFileSync(
+  serverConfigPath,
+  JSON.stringify({ aliases: [{ "url-path": "/common/blank.html", "local-dir": helperRoot }] }),
 );
+
+let wptRun: ReturnType<typeof spawnSync>;
+try {
+  wptRun = spawnSync(
+    process.env.WPT_PYTHON ?? "python3",
+    [
+      resolve(wptRoot, "wpt"),
+      "--venv",
+      process.env.WPT_VENV ?? resolve(wptRoot, "_venv_polyfill"),
+      "run",
+      ...browserArguments,
+      "--yes",
+      "--test-types",
+      "testharness",
+      "--inject-script",
+      polyfillPath,
+      "--manifest",
+      resolve(wptRoot, "MANIFEST.json"),
+      "--metadata",
+      fileURLToPath(new URL("./metadata", import.meta.url)),
+      "--log-mach=-",
+      "--log-wptreport",
+      reportPath,
+      "--no-pause-after-test",
+      "--processes",
+      browser === "safari" ? "1" : "4",
+      "--retry-unexpected=0",
+      "--no-manifest-download",
+      "--include",
+      "/webmcp",
+      ...process.argv.slice(2),
+      browser,
+    ],
+    { cwd: wptRoot, stdio: "inherit" },
+  );
+} finally {
+  rmSync(serverConfigPath, { force: true });
+  rmSync(helperRoot, { recursive: true, force: true });
+}
 if (wptRun.error) {
   throw wptRun.error;
 }
