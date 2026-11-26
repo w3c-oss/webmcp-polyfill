@@ -676,7 +676,11 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
       ["name is empty", { ...good, name: "" }],
       ["name has a disallowed character", { ...good, name: "invalid name" }],
       ["name exceeds 128 characters", { ...good, name: "a".repeat(129) }],
-      ["description is empty", { ...good, description: "" }],
+      ["description is empty", { ...good, name: "empty", description: "" }],
+      ["description is ASCII whitespace", { ...good, name: "blank", description: " \t\n\f\r " }],
+      // U+000B VERTICAL TAB and U+00A0 NO-BREAK SPACE are not ASCII whitespace.
+      ["description is a vertical tab", { ...good, name: "vertical-tab", description: "\v" }],
+      ["description is a no-break space", { ...good, name: "nbsp", description: "\u00A0" }],
       ["inputSchema is not an object", { ...good, name: "bad-schema", inputSchema: null }],
       ["inputSchema is circular", { ...good, name: "circular", inputSchema: circular }],
       [
@@ -716,6 +720,9 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
     ["name has a disallowed character", "InvalidStateError"],
     ["name exceeds 128 characters", "InvalidStateError"],
     ["description is empty", "InvalidStateError"],
+    ["description is ASCII whitespace", "InvalidStateError"],
+    ["description is a vertical tab", "resolved"],
+    ["description is a no-break space", "resolved"],
     ["inputSchema is not an object", "TypeError"],
     ["inputSchema is circular", "TypeError"],
     ["inputSchema serializes to undefined", "TypeError"],
@@ -724,7 +731,7 @@ test("rejects invalid descriptors, duplicates and unserializable schemas", async
     ["outputSchema serializes to undefined", "TypeError"],
     ["outputSchema is a BigInt", "TypeError"],
   ]);
-  expect(registered).toEqual(["valid"]);
+  expect(registered).toEqual(["nbsp", "valid", "vertical-tab"]);
 });
 
 test("snapshots outputSchema, is null when absent, and does not validate results", async ({

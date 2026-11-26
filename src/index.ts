@@ -203,8 +203,14 @@ class ModelContextPolyfill extends EventTarget implements WebMCP.ModelContext {
         "InvalidStateError",
       );
     }
-    if (!description) {
-      throw new NativeDOMException("A tool description cannot be empty", "InvalidStateError");
+    // Stripping leading and trailing ASCII whitespace leaves nothing only when every
+    // character is ASCII whitespace.
+    const isBlankDescription = /^[\t\n\f\r ]*$/u.test(description);
+    if (isBlankDescription) {
+      throw new NativeDOMException(
+        "A tool description cannot be empty or only ASCII whitespace",
+        "InvalidStateError",
+      );
     }
     // inputSchema is serialized before outputSchema. Either failure rejects before the signal.
     const serializedSchema = inputSchema === undefined ? undefined : serializeJSON(inputSchema);

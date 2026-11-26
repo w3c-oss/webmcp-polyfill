@@ -28,7 +28,7 @@ Polyfill tests disable native WebMCP. A separate Chromium test uses
 context and its tools.
 
 WPT needs Python 3.11+ and a clean checkout at
-[`536ae94`](https://github.com/web-platform-tests/wpt/commit/536ae943008db6f9a5aeb05c8f174dc6d3e763fa).
+[`74d6562`](https://github.com/web-platform-tests/wpt/commit/74d6562a288190d1a8d3c40033a07036ecf30fa6).
 The [CI workflow](.github/workflows/release.yml) has the sparse-checkout and dependency setup.
 
 ```sh
@@ -63,7 +63,11 @@ Checked against [draft `eada13b`](https://github.com/webmachinelearning/webmcp/b
 the `Tool` interface follows [webmcp#348](https://github.com/webmachinelearning/webmcp/pull/348)
 (draft `14b6d53`), and `waitForToolsUntil()` follows
 [webmcp#373](https://github.com/webmachinelearning/webmcp/pull/373) (draft `47e2b99`); the
-other draft changes since `eada13b` are not yet reviewed.
+other draft changes since `eada13b` are not yet reviewed. Rejecting descriptions that are empty
+after stripping leading and trailing ASCII whitespace follows the resolution of
+[webmcp#372](https://github.com/webmachinelearning/webmcp/issues/372) and the open
+[webmcp#393](https://github.com/webmachinelearning/webmcp/pull/393); WPT
+[#65719](https://github.com/web-platform-tests/wpt/pull/65719) covers it.
 
 - **Missing APIs:** declarative forms and CSS states are not implemented. The pinned WPT
   also covers `resumeTool()`, which is not in the draft; those
