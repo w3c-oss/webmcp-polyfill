@@ -28,7 +28,7 @@ Polyfill tests disable native WebMCP. A separate Chromium test uses
 context and its tools.
 
 WPT needs Python 3.11+ and a clean checkout at
-[`536ae94`](https://github.com/web-platform-tests/wpt/commit/536ae943008db6f9a5aeb05c8f174dc6d3e763fa).
+[`74d6562`](https://github.com/web-platform-tests/wpt/commit/74d6562a288190d1a8d3c40033a07036ecf30fa6).
 The [CI workflow](.github/workflows/release.yml) has the sparse-checkout and dependency setup.
 
 ```sh
